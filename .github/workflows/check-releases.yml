@@ -1,45 +1,42 @@
-name: Check New PocketMine-MP Releases & Auto-Update Manifest
+name: Check New PocketMine-MP Releases & Generate Stubs
 
 on:
   schedule:
-    # Corre cada 6 horas
-    - cron: "0 */6 * * *"
+    # Corre cada 12 horas
+    - cron: "0 */12 * * *"
   workflow_dispatch:
     inputs:
       force_version:
-        description: "Forzar verificación de una versión específica (ej: 5.42.1)"
+        description: "Forzar generación de stubs para versión específica (ej: 5.42.1)"
         required: false
         type: string
-      auto_pr:
-        description: "Crear PR automáticamente si se detecta versión nueva"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
 
 jobs:
   check-releases:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.pm_release.outputs.version }}
-      needs_update: ${{ steps.check.outputs.exists == 'false' }}
+      needs_generation: ${{ steps.check.outputs.needs_generation }}
       mc_version: ${{ steps.release_details.outputs.mc_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # ────────────────────────────────────────────────────────────
-      # Setup PHP para scripts
+      # Setup
       # ────────────────────────────────────────────────────────────
-      - name: Setup PHP
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
-          extensions: curl, json, zip
 
       # ────────────────────────────────────────────────────────────
       # Obtener el último release de PocketMine-MP
@@ -60,27 +57,31 @@ jobs:
           echo "version=$LATEST" >> $GITHUB_OUTPUT
 
       # ────────────────────────────────────────────────────────────
-      # Verificar si ya está en manifest.json
+      # Verificar si ya existe release de stubs en este repositorio
       # ────────────────────────────────────────────────────────────
-      - name: Check if version already in manifest
+      - name: Check if stubs already exist for this version
         id: check
         run: |
           VERSION="${{ steps.pm_release.outputs.version }}"
-          EXISTS=$(jq --arg v "$VERSION" \
-            '[.versions[].id] | contains([$v])' manifest.json)
-          echo "exists=$EXISTS" >> $GITHUB_OUTPUT
-          if [ "$EXISTS" = "true" ]; then
-            echo "✓ Versión $VERSION ya está en manifest"
+
+          # Verificar si existe release con tag de la versión
+          RELEASE_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$RELEASE_URL")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "needs_generation=false" >> $GITHUB_OUTPUT
+            echo "✓ Stubs para $VERSION ya existen en este repositorio"
           else
-            echo "⚠ Versión $VERSION NO está en manifest - se actualizará"
+            echo "needs_generation=true" >> $GITHUB_OUTPUT
+            echo "⚠ Stubs para $VERSION NO existen - se generarán"
           fi
 
       # ────────────────────────────────────────────────────────────
-      # Obtener detalles del release (Minecraft version, assets)
+      # Obtener detalles del release (Minecraft version)
       # ────────────────────────────────────────────────────────────
-      - name: Get release details
+      - name: Get release details from PMMP
         id: release_details
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.needs_generation == 'true'
         run: |
           VERSION="${{ steps.pm_release.outputs.version }}"
           RELEASE_DATA=$(curl -s \
@@ -88,24 +89,21 @@ jobs:
             "https://api.github.com/repos/pmmp/PocketMine-MP/releases/tags/$VERSION")
 
           BODY=$(echo "$RELEASE_DATA" | jq -r '.body // ""')
-          PUBLISHED=$(echo "$RELEASE_DATA" | jq -r '.published_at // ""')
 
           # Intentar extraer versión de Minecraft del body del release
-          MC_VERSION=$(echo "$BODY" | grep -oP 'Bedrock[^0-9]*\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "NEEDS_MANUAL_FILL")
+          MC_VERSION=$(echo "$BODY" | grep -oP 'Bedrock[^0-9]*\K[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
-          echo "published_at=$PUBLISHED" >> $GITHUB_OUTPUT
           echo "mc_version=$MC_VERSION" >> $GITHUB_OUTPUT
-          echo "✓ Versión Minecraft detectada: $MC_VERSION"
+          echo "✓ MC Version: $MC_VERSION"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Job 2: Generar stubs automáticamente si es nueva versión
+  # Job 2: Generar stubs automáticamente
   # ─────────────────────────────────────────────────────────────────────────────
   generate-stubs:
     needs: check-releases
-    if: needs.check-releases.outputs.needs_update == 'true'
+    if: needs.check-releases.outputs.needs_generation == 'true'
     runs-on: ubuntu-latest
-    outputs:
-      sha256: ${{ steps.generate.outputs.sha256 }}
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -113,12 +111,22 @@ jobs:
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: "8.2"
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            generator/workdir/pocketmine_phar
+            generator/workdir/phpstorm_stubs_fork
+          key: stubs-downloads-${{ needs.check-releases.outputs.version }}
+          restore-keys: |
+            stubs-downloads-
 
       - name: Generate stubs
         id: generate
@@ -135,183 +143,78 @@ jobs:
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
           echo "✅ Stubs generados - SHA256: $SHA256"
 
-      - name: Upload stubs to GitHub Release
+      - name: Verify generated files
         run: |
           VERSION="${{ needs.check-releases.outputs.version }}"
           ZIP="generator/output/stubs-${VERSION}.zip"
+          STATS="generator/output/stats-${VERSION}.json"
 
           if [ ! -f "$ZIP" ]; then
             echo "❌ ZIP no encontrado: $ZIP"
             exit 1
           fi
 
-          # Esperar a que el release de stubs exista (puede tardar)
-          for i in {1..30}; do
-            RELEASE=$(curl -s \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" | jq -r '.id // empty')
+          if [ ! -f "$STATS" ]; then
+            echo "❌ Stats no encontrado: $STATS"
+            exit 1
+          fi
 
-            if [ -n "$RELEASE" ]; then
-              echo "✓ Release $VERSION encontrado"
-              break
-            fi
+          SIZE=$(du -sh "$ZIP" | cut -f1)
+          echo "✅ ZIP verificado: $SIZE"
 
-            if [ $i -eq 30 ]; then
-              echo "⚠️  Release aún no existe, se omitirá. (será creado por workflow Generate Stubs)"
-              exit 0
-            fi
-
-            echo "Esperando release... intento $i/30"
-            sleep 2
-          done
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Job 3: Crear PR automáticamente
-  # ─────────────────────────────────────────────────────────────────────────────
-  auto-update:
-    needs: [check-releases, generate-stubs]
-    if: needs.check-releases.outputs.needs_update == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          fetch-depth: 0
+          name: stubs-${{ needs.check-releases.outputs.version }}
+          path: |
+            generator/output/stubs-*.zip
+            generator/output/stats-*.json
+          retention-days: 5
 
-      # ────────────────────────────────────────────────────────────
-      # Setup PHP
-      # ────────────────────────────────────────────────────────────
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          php-version: "8.2"
-          extensions: curl, json, zip
+          tag_name: ${{ needs.check-releases.outputs.version }}
+          name: "Stubs PocketMine-MP ${{ needs.check-releases.outputs.version }}"
+          files: |
+            generator/output/stubs-${{ needs.check-releases.outputs.version }}.zip
+            generator/output/stats-${{ needs.check-releases.outputs.version }}.json
+          body: |
+            ## 📦 Stubs para PocketMine-MP ${{ needs.check-releases.outputs.version }}
 
-      # ────────────────────────────────────────────────────────────
-      # Configurar Git
-      # ────────────────────────────────────────────────────────────
-      - name: Configure git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            Generados automáticamente por GitHub Actions.
+            Listos para usar con **Intelephense** en [PocketIDE](https://github.com/pocketide/pocketide).
 
-      # ────────────────────────────────────────────────────────────
-      # Crear rama para los cambios
-      # ────────────────────────────────────────────────────────────
-      - name: Create feature branch
-        id: branch
-        run: |
-          VERSION="${{ needs.check-releases.outputs.version }}"
-          BRANCH_NAME="feat/update-pm-${VERSION//./}"
-          git checkout -b "$BRANCH_NAME"
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+            ### 📋 Información
 
-      # ────────────────────────────────────────────────────────────
-      # Actualizar manifest.json (simulado - sin script PHP real)
-      # ────────────────────────────────────────────────────────────
-      - name: Update manifest with new version
-        id: update
-        run: |
-          VERSION="${{ needs.check-releases.outputs.version }}"
-          MC_VERSION="${{ needs.check-releases.outputs.mc_version }}"
-          SHA256="${{ needs.generate-stubs.outputs.sha256 }}"
+            | Campo | Valor |
+            |-------|-------|
+            | **Versión PM** | `${{ needs.check-releases.outputs.version }}` |
+            | **Versión MC** | `${{ needs.check-releases.outputs.mc_version }}` |
+            | **SHA256** | `${{ steps.generate.outputs.sha256 }}` |
 
-          echo "📦 Actualizando manifest para versión $VERSION..."
+            ### 🔐 Checksum SHA256
 
-          # Nota: En un caso real, usarías jq o un script PHP para actualizar manifest.json
-          # Por ahora solo marcamos como actualizado
-          echo "✓ Manifest actualizado exitosamente"
-          echo "success=true" >> $GITHUB_OUTPUT
+            ```
+            ${{ steps.generate.outputs.sha256 }}
+            ```
 
-      # ────────────────────────────────────────────────────────────
-      # Commit cambios
-      # ────────────────────────────────────────────────────────────
-      - name: Commit changes
-        run: |
-          VERSION="${{ needs.check-releases.outputs.version }}"
-          git add manifest.json 2>/dev/null || true
-          git commit -m "feat: add PocketMine-MP $VERSION
+            Usa este valor en [pocketide/pocketmine-manifest](https://github.com/pocketide/pocketmine-manifest) para actualizar el manifest.
 
-          - Auto-update via GitHub Actions
-          - MC version: ${{ needs.check-releases.outputs.mc_version }}
-          - SHA256: ${{ needs.generate-stubs.outputs.sha256 }}
-          - Stubs generated and verified" 2>/dev/null || echo "No changes to commit"
+            ### 📊 Contenido
 
-      # ────────────────────────────────────────────────────────────
-      # Push y crear Pull Request
-      # ────────────────────────────────────────────────────────────
-      - name: Push branch and create PR
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { execSync } = require('child_process');
-            const version = '${{ needs.check-releases.outputs.version }}';
-            const branchName = '${{ steps.branch.outputs.branch_name }}';
-            const mcVersion = '${{ needs.check-releases.outputs.mc_version }}';
-            const sha256 = '${{ needs.generate-stubs.outputs.sha256 }}';
+            Ver `stats-${{ needs.check-releases.outputs.version }}.json` para detalles completos.
 
-            try {
-              // Push branch
-              console.log('📤 Pusheando rama...');
-              execSync(`git push origin ${branchName}`, { stdio: 'inherit' });
+            ---
 
-              // Crear PR
-              const pr = await github.rest.pulls.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `🎉 feat: Add PocketMine-MP ${version}`,
-                head: branchName,
-                base: 'main',
-                body: [
-                  `## 🚀 Automated Version Update`,
-                  ``,
-                  `### 📋 Details`,
-                  `| Field | Value |`,
-                  `|-------|-------|`,
-                  `| **Version** | \`${version}\` |`,
-                  `| **MC Version** | \`${mcVersion}\` |`,
-                  `| **Stubs SHA256** | \`${sha256}\` |`,
-                  ``,
-                  `### ✅ Automated Checks`,
-                  `- [x] Stubs generated successfully`,
-                  `- [x] SHA256 verified`,
-                  `- [x] Manifest entry created`,
-                  ``,
-                  `### 🔍 Review Checklist`,
-                  `- [ ] Verify MC/API versions are correct`,
-                  `- [ ] Validate against official changelog`,
-                  `- [ ] Test stubs with IDE`,
-                  ``,
-                  `This PR was created automatically. Please review and merge if everything looks correct.`,
-                  ``,
-                  `---`,
-                  `*Generated by Automated PocketMine Version Manager*`,
-                ].join('\n'),
-                labels: ['automated', 'version-update'],
-              });
+            *Generado por: Check New PocketMine-MP Releases*
 
-              console.log(`✅ PR created: ${pr.data.html_url}`);
-              core.setOutput('pr_number', pr.data.number);
-              core.setOutput('pr_url', pr.data.html_url);
-            } catch (error) {
-              if (error.message.includes('already exists')) {
-                console.log('ℹ️  PR ya existe para esta rama');
-              } else {
-                throw error;
-              }
-            }
-
-      # ────────────────────────────────────────────────────────────
-      # Resumen de la ejecución
-      # ────────────────────────────────────────────────────────────
       - name: Print summary
-        if: always()
         run: |
-          echo "📊 === UPDATE SUMMARY ==="
+          echo "📊 === GENERATION SUMMARY ==="
           echo "Version: ${{ needs.check-releases.outputs.version }}"
           echo "MC Version: ${{ needs.check-releases.outputs.mc_version }}"
-          echo "SHA256: ${{ needs.generate-stubs.outputs.sha256 }}"
-          echo "Branch: ${{ steps.branch.outputs.branch_name }}"
+          echo "SHA256: ${{ steps.generate.outputs.sha256 }}"
           echo ""
-          echo "✅ Auto-update workflow completed!"
+          echo "✅ Release created successfully!"
+          echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ needs.check-releases.outputs.version }}"
