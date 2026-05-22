@@ -1,0 +1,214 @@
+name: Generate Stubs
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión de PocketMine-MP (ej: 5.42.1)'
+        required: true
+        type: string
+      skip_phpstorm:
+        description: 'Omitir phpstorm-stubs fork (más rápido)'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Publicar como pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # para crear Releases
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ────────────────────────────────────────────────────────────
+      # Setup
+      # ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          # PHP solo se necesita para extraer el .phar; no requiere extensiones extra
+
+      # ────────────────────────────────────────────────────────────
+      # Verificar que la versión existe en GitHub
+      # ────────────────────────────────────────────────────────────
+      - name: Verify PocketMine-MP release exists
+        id: verify
+        run: |
+          VERSION="${{ inputs.version }}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://github.com/pmmp/PocketMine-MP/releases/tag/$VERSION")
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ La versión $VERSION no existe en pmmp/PocketMine-MP (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          echo "✅ Versión $VERSION verificada."
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # ────────────────────────────────────────────────────────────
+      # Caché de workdir (descarga del phar y phpstorm-stubs)
+      # ────────────────────────────────────────────────────────────
+      - name: Cache downloaded files
+        uses: actions/cache@v4
+        with:
+          path: |
+            generator/workdir/pocketmine_phar
+            generator/workdir/phpstorm_stubs_fork
+          key: stubs-downloads-${{ inputs.version }}
+          restore-keys: |
+            stubs-downloads-
+
+      # ────────────────────────────────────────────────────────────
+      # Generar stubs
+      # ────────────────────────────────────────────────────────────
+      - name: Generate stubs
+        id: generate
+        run: |
+          VERSION="${{ steps.verify.outputs.version }}"
+          SKIP_PHPSTORM_FLAG=""
+          if [ "${{ inputs.skip_phpstorm }}" == "true" ]; then
+            SKIP_PHPSTORM_FLAG="--skip-phpstorm"
+          fi
+          
+          # El SHA256 se imprime en stdout como última línea
+          SHA256=$(python generator/generate.py \
+            --version="$VERSION" \
+            --workdir="generator/workdir" \
+            --output="generator/output" \
+            $SKIP_PHPSTORM_FLAG)
+          
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "zip_path=generator/output/stubs-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "SHA256 del stubs.zip: $SHA256"
+
+      # ────────────────────────────────────────────────────────────
+      # Verificar el ZIP generado
+      # ────────────────────────────────────────────────────────────
+      - name: Verify generated ZIP
+        run: |
+          ZIP="generator/output/stubs-${{ inputs.version }}.zip"
+          
+          if [ ! -f "$ZIP" ]; then
+            echo "❌ No se encontró el ZIP: $ZIP"
+            exit 1
+          fi
+          
+          SIZE=$(du -sh "$ZIP" | cut -f1)
+          FILES=$(unzip -l "$ZIP" | tail -1 | awk '{print $2}')
+          echo "✅ ZIP verificado: $SIZE, $FILES archivos"
+          
+          # Verificar que contiene archivos .php
+          PHP_COUNT=$(unzip -l "$ZIP" | grep -c "\.php$" || true)
+          if [ "$PHP_COUNT" -lt 5 ]; then
+            echo "❌ El ZIP contiene menos de 5 archivos .php ($PHP_COUNT)"
+            exit 1
+          fi
+          echo "✅ Archivos PHP encontrados: $PHP_COUNT"
+          
+          # Verificar que contiene el índice de autocompletado
+          if ! unzip -l "$ZIP" | grep -q "autocompletion_index.json"; then
+            echo "❌ No se encontró autocompletion_index.json en el ZIP"
+            exit 1
+          fi
+          echo "✅ autocompletion_index.json presente"
+
+      # ────────────────────────────────────────────────────────────
+      # Publicar como GitHub Release
+      # ────────────────────────────────────────────────────────────
+      - name: Read stats file
+        id: stats
+        run: |
+          STATS_FILE="generator/output/stats-${{ inputs.version }}.json"
+          if [ -f "$STATS_FILE" ]; then
+            CLASSES=$(jq -r '.classes' "$STATS_FILE")
+            INTERFACES=$(jq -r '.interfaces' "$STATS_FILE")
+            TRAITS=$(jq -r '.traits' "$STATS_FILE")
+            FUNCTIONS=$(jq -r '.functions' "$STATS_FILE")
+            CONSTANTS=$(jq -r '.constants' "$STATS_FILE")
+            echo "classes=$CLASSES" >> $GITHUB_OUTPUT
+            echo "interfaces=$INTERFACES" >> $GITHUB_OUTPUT
+            echo "traits=$TRAITS" >> $GITHUB_OUTPUT
+            echo "functions=$FUNCTIONS" >> $GITHUB_OUTPUT
+            echo "constants=$CONSTANTS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: "Stubs PocketMine-MP ${{ inputs.version }}"
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            generator/output/stubs-${{ inputs.version }}.zip
+            generator/output/stats-${{ inputs.version }}.json
+          body: |
+            ## Stubs para PocketMine-MP ${{ inputs.version }}
+
+            Generados automáticamente por [pocketide/pocketmine-stubs](https://github.com/pocketide/pocketmine-stubs).
+            Listos para usar con **Intelephense** en [PocketIDE](https://github.com/pocketide/pocketide).
+
+            ### 📦 Contenido del ZIP
+
+            | Tipo | Cantidad |
+            |------|----------|
+            | Clases | ${{ steps.stats.outputs.classes }} |
+            | Interfaces | ${{ steps.stats.outputs.interfaces }} |
+            | Traits | ${{ steps.stats.outputs.traits }} |
+            | Funciones | ${{ steps.stats.outputs.functions }} |
+            | Constantes | ${{ steps.stats.outputs.constants }} |
+
+            ### 🔐 Checksum
+
+            ```
+            SHA256: ${{ steps.generate.outputs.sha256 }}
+            ```
+
+            Usa este valor en el campo `stubs.checksum_sha256` de
+            [pocketide/pocketmine-manifest](https://github.com/pocketide/pocketmine-manifest).
+
+            ### ⚙️ Cómo usarlo en manifest.json
+
+            ```bash
+            php scripts/update-manifest.php \
+              --version=${{ inputs.version }} \
+              --stubs-sha256=${{ steps.generate.outputs.sha256 }}
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ────────────────────────────────────────────────────────────
+      # Resumen del job
+      # ────────────────────────────────────────────────────────────
+      - name: Job summary
+        run: |
+          echo "## ✅ Stubs generados exitosamente" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Versión | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA256 | \`${{ steps.generate.outputs.sha256 }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Clases | ${{ steps.stats.outputs.classes }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Funciones | ${{ steps.stats.outputs.functions }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Siguiente paso" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "php scripts/update-manifest.php \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --version=${{ inputs.version }} \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --stubs-sha256=${{ steps.generate.outputs.sha256 }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

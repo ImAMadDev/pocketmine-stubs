@@ -1,0 +1,7 @@
+# pocketmine-stubs generator — Python dependencies
+# Todas las dependencias son de stdlib: no se requieren paquetes externos.
+# Este archivo existe para documentar explícitamente que no hay dependencias,
+# y para compatibilidad con workflows de CI que hacen `pip install -r requirements.txt`.
+
+# stdlib usada:
+#   re, json, zipfile, urllib.request, subprocess, pathlib, logging, time, hashlib, argparse
