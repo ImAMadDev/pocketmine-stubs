@@ -1,20 +1,20 @@
 # 🤖 Automatización: Check New PocketMine-MP Releases
 
-Este workflow automatiza la detección de nuevas versiones de PocketMine-MP y la generación de stubs, creando PRs automáticamente.
+Este workflow automatiza la detección de nuevas versiones de PocketMine-MP y genera stubs automáticamente cada 12 horas, creando GitHub Releases.
 
 ## 📅 Scheduled Automation
 
-El workflow se ejecuta **automáticamente cada 6 horas** mediante cron, pero también puede ejecutarse manualmente.
+El workflow se ejecuta **automáticamente cada 12 horas** mediante cron, pero también puede ejecutarse manualmente.
 
 ### Trigger: `schedule`
 
 ```yaml
 schedule:
-  - cron: "0 */6 * * *"
+  - cron: "0 */12 * * *"
 ```
 
 **¿Cuándo se ejecuta?**
-- Cada 6 horas: `0:00, 6:00, 12:00, 18:00 UTC`
+- Cada 12 horas: `0:00, 12:00 UTC`
 
 ---
 
@@ -22,19 +22,19 @@ schedule:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ Cada 6 horas o manual (workflow_dispatch)                     │
+│ Cada 12 horas o manual (workflow_dispatch)                    │
 └───────────────────────┬────────────────────────────────────────┘
                         │
                         ▼
         ┌───────────────────────────────────┐
         │ Job 1: check-releases             │
         │ ├─ ¿Nueva versión en PMMP?        │
-        │ ├─ ¿Ya en manifest.json?          │
+        │ ├─ ¿Ya generado en este repo?     │
         │ └─ Extraer MC version             │
         └───────────────┬───────────────────┘
                         │
                         ▼
-            ¿needs_update = true?
+            ¿needs_generation = true?
                         │
         ┌───────────────┴───────────────┐
         │ NO                            │ SÍ
@@ -43,22 +43,14 @@ schedule:
                             │ Job 2: generate-stubs    │
                             │ ├─ python generate.py    │
                             │ ├─ SHA256                │
-                            │ └─ Verificar ZIP         │
-                            └────────┬─────────────────┘
-                                     │
-                                     ▼
-                            ┌──────────────────────────┐
-                            │ Job 3: auto-update       │
-                            │ ├─ Crear rama            │
-                            │ ├─ Commit manifest       │
-                            │ ├─ Push                  │
-                            │ └─ Crear PR              │
+                            │ ├─ Verificar ZIP         │
+                            │ └─ Crear Release         │
                             └────────┬─────────────────┘
                                      │
                                      ▼
                         ┌────────────────────────────┐
-                        │ ✅ PR creado automáticamente│
-                        │    Esperando revisión      │
+                        │ ✅ Release creado          │
+                        │    Stubs disponibles       │
                         └────────────────────────────┘
 ```
 
@@ -68,7 +60,7 @@ schedule:
 
 **¿Qué hace?**
 
-Detecta nuevas versiones de PocketMine-MP y verifica si ya están en manifest.json.
+Detecta nuevas versiones de PocketMine-MP y verifica si ya existen en este repositorio.
 
 ### Step 1: Get latest PocketMine-MP release
 
@@ -88,19 +80,20 @@ curl -s -H "Accept: application/vnd.github+json" \
 
 ---
 
-### Step 2: Check if version already in manifest
+### Step 2: Check if stubs already exist
 
 ```bash
-jq --arg v "5.43.1" '[.versions[].id] | contains([$v])' manifest.json
+curl -s -o /dev/null -w "%{http_code}" \
+  "https://api.github.com/repos/$REPO/releases/tags/5.43.1"
 ```
 
 **Output:**
-- `true` → Ya existe, skip los demás jobs
-- `false` → Nueva versión, continúa
+- `200` → Ya existen, skip los demás jobs
+- `404` → Nueva versión, genera stubs
 
 ---
 
-### Step 3: Get release details
+### Step 3: Get release details from PMMP
 
 Extrae información del release:
 
@@ -117,11 +110,24 @@ curl -s "https://api.github.com/repos/pmmp/PocketMine-MP/releases/tags/5.43.1" |
 
 ## 🚀 Job 2: `generate-stubs` (condicional)
 
-**Ejecuta solo si `needs_update == 'true'`**
+**Ejecuta solo si `needs_generation == 'true'`**
 
 ```yaml
-if: needs.check-releases.outputs.needs_update == 'true'
+if: needs.check-releases.outputs.needs_generation == 'true'
 ```
+
+### Setup y Caché
+
+```yaml
+- uses: actions/cache@v4
+  with:
+    path: |
+      generator/workdir/pocketmine_phar
+      generator/workdir/phpstorm_stubs_fork
+    key: stubs-downloads-${{ version }}
+```
+
+Cachea descargas para ejecuciones futuras.
 
 ### Genera los stubs
 
@@ -138,125 +144,61 @@ python3 generator/generate.py \
 a992d1a6d33d65b9117ec7cb6a76606d9d41a75d2de57ffb09e87f6af63a841
 ```
 
-El SHA256 se captura y pasa al siguiente job:
+El SHA256 se captura:
 
 ```yaml
 echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 ```
 
----
+### Verifica archivos
 
-## 📝 Job 3: `auto-update` (condicional)
+- ✅ ZIP existe
+- ✅ Stats JSON existe
+- ✅ Tamaño correcto
 
-**Ejecuta solo después de `generate-stubs`:**
+### Sube artifacts
 
 ```yaml
-needs: [check-releases, generate-stubs]
-if: needs.check-releases.outputs.needs_update == 'true'
+- uses: actions/upload-artifact@v4
+  with:
+    name: stubs-5.43.1
+    path: generator/output/stubs-*.zip
+    retention-days: 5
 ```
 
-### Step 1: Create feature branch
+### Crea GitHub Release
 
-```bash
-BRANCH_NAME="feat/update-pm-5431"  # 5.43.1 sin puntos
-git checkout -b "$BRANCH_NAME"
-```
-
----
-
-### Step 2: Update manifest
-
-Actualiza `manifest.json` con la nueva versión:
-
-```json
-{
-  "id": "5.43.1",
-  "mc_version": "1.21.51",
-  "api_version": "6.0.0",
-  "status": "stable",
-  "stubs": {
-    "url": "https://github.com/.../releases/download/5.43.1/stubs-5.43.1.zip",
-    "checksum_sha256": "a992d1a..."
-  },
-  "date": "2026-05-22T18:20:00Z"
-}
-```
-
----
-
-### Step 3: Commit y Push
-
-```bash
-git add manifest.json
-git commit -m "feat: add PocketMine-MP 5.43.1
-
-- Auto-update via GitHub Actions
-- MC version: 1.21.51
-- SHA256: a992d1a...
-- Stubs generated and verified"
-
-git push origin feat/update-pm-5431
-```
-
----
-
-### Step 4: Create Pull Request
-
-Usa `actions/github-script@v7` para crear PR automático:
-
-```javascript
-await github.rest.pulls.create({
-  title: "🎉 feat: Add PocketMine-MP 5.43.1",
-  head: "feat/update-pm-5431",
-  base: "main",
-  body: "Descripción formateada con detalles...",
-  labels: ["automated", "version-update"]
-})
-```
-
-**Resultado en GitHub:**
-
-```
-PR #123
-🎉 feat: Add PocketMine-MP 5.43.1
-
-## 🚀 Automated Version Update
-
-### 📋 Details
-| Field | Value |
-|-------|-------|
-| **Version** | `5.43.1` |
-| **MC Version** | `1.21.51` |
-| **Stubs SHA256** | `a992d1a...` |
-
-### ✅ Automated Checks
-- [x] Stubs generated successfully
-- [x] SHA256 verified
-- [x] Manifest entry created
-
-### 🔍 Review Checklist
-- [ ] Verify MC/API versions are correct
-- [ ] Validate against official changelog
-- [ ] Test stubs with IDE
-
-[Labels: automated, version-update]
+```yaml
+- uses: softprops/action-gh-release@v2
+  with:
+    tag_name: 5.43.1
+    name: "Stubs PocketMine-MP 5.43.1"
+    files: |
+      generator/output/stubs-5.43.1.zip
+      generator/output/stats-5.43.1.json
+    body: |
+      ## 📦 Stubs para PocketMine-MP 5.43.1
+      
+      | Campo | Valor |
+      |-------|-------|
+      | **Versión PM** | `5.43.1` |
+      | **Versión MC** | `1.21.51` |
+      | **SHA256** | `a992d1a...` |
 ```
 
 ---
 
 ## 📊 Inputs (Manual Trigger)
 
-Si ejecutas manualmente desde **Actions → Generate Stubs → Run workflow**:
+Si ejecutas manualmente desde **Actions → Check New PocketMine-MP Releases → Run workflow**:
 
 | Input | Tipo | Default | Descripción |
 |-------|------|---------|-------------|
-| `force_version` | string | - | Fuerza verificación de versión específica |
-| `auto_pr` | boolean | `true` | Crea PR automáticamente |
+| `force_version` | string | - | Fuerza generación para versión específica |
 
 **Ejemplo:**
 ```
 force_version = "5.42.1"
-auto_pr = true
 ```
 
 ---
@@ -266,7 +208,7 @@ auto_pr = true
 ```yaml
 check-releases outputs:
   - version: "5.43.1"
-  - needs_update: true
+  - needs_generation: true
   - mc_version: "1.21.51"
 
 generate-stubs outputs:
@@ -277,19 +219,19 @@ Usados así:
 
 ```yaml
 ${{ needs.check-releases.outputs.version }}
-${{ needs.generate-stubs.outputs.sha256 }}
+${{ steps.generate.outputs.sha256 }}
 ```
 
 ---
 
 ## ⏱️ Tiempos Estimados
 
-| Job | Tiempo | Notas |
-|-----|--------|-------|
-| check-releases | ~30 seg | Consultas a API |
-| generate-stubs | ~2-3 min | Generación de stubs |
-| auto-update | ~1 min | Push y PR |
-| **TOTAL** | **~4 min** | Sin contar caché |
+| Fase | Tiempo | Notas |
+|------|--------|-------|
+| Check releases | ~30 seg | Consultas a APIs |
+| Generate stubs | ~2-3 min | Parsing + generación |
+| Create release | ~1 min | Upload + release |
+| **TOTAL** | **~4 min** | Con caché activa |
 
 ---
 
@@ -298,20 +240,20 @@ ${{ needs.generate-stubs.outputs.sha256 }}
 El workflow incluye validaciones importantes:
 
 ```bash
-# 1. ¿Versión existe?
+# 1. ¿Última versión en PMMP?
 curl -s "$URL" | jq '.tag_name'
 
-# 2. ¿Ya está en manifest?
-jq '[.versions[].id] | contains([...])'
+# 2. ¿Ya existe en este repo?
+curl -s -o /dev/null -w "%{http_code}" "$RELEASE_URL"
 
 # 3. ¿ZIP se generó?
 [ -f "stubs-$VERSION.zip" ]
 
-# 4. ¿ZIP tiene archivos?
-unzip -l "$ZIP" | grep -c "\.php$"
+# 4. ¿Stats se generó?
+[ -f "stats-$VERSION.json" ]
 ```
 
-Si fallan, el workflow **se detiene** y notifica el error.
+Si fallan, el workflow **se detiene**.
 
 ---
 
@@ -324,23 +266,20 @@ Si fallan, el workflow **se detiene** y notifica el error.
 
 Job 1: check-releases
   ✓ Obtiene latest: 5.43.1
-  ✓ Check manifest: NO existe
+  ✓ Check releases: NOT_FOUND (404)
   ✓ Extrae MC version: 1.21.51
-  → needs_update = true
+  → needs_generation = true
 
-Job 2: generate-stubs (paralelo)
+Job 2: generate-stubs
   ✓ Setup Python 3.11, PHP 8.2
+  ✓ Restaura caché
   ✓ Genera stubs → SHA256: a992d1a...
-  ✓ Verifica ZIP (228 archivos, 15 MB)
-  → output: sha256
+  ✓ Verifica ZIP y Stats
+  ✓ Sube artifacts (5 días)
+  ✓ Crea Release con archivos
+  → Release publicado
 
-Job 3: auto-update
-  ✓ Crea rama feat/update-pm-5431
-  ✓ Actualiza manifest.json
-  ✓ Commit: "feat: add PocketMine-MP 5.43.1"
-  ✓ Push origin feat/update-pm-5431
-  ✓ Crea PR #123
-  → Espera revisión manual
+[04:00] ✅ Workflow completado exitosamente
 ```
 
 ---
@@ -352,54 +291,62 @@ Job 3: auto-update
 
 Job 1: check-releases
   ✓ Obtiene latest: 5.43.1
-  ✓ Check manifest: YA EXISTE
-  → needs_update = false
+  ✓ Check releases: FOUND (200)
+  → needs_generation = false
 
-Job 2, 3: SKIPPED (no se ejecutan)
+Job 2: SKIPPED (no se ejecuta)
   ℹ️  Workflow se detiene silenciosamente
 ```
 
 ---
 
-## 🔄 Cómo integrar con `pocketmine-manifest`
+## 🔄 Integración con otros repositorios
 
-Este workflow es complementario. Se integra así:
-
+### pocketine-stubs (este repo)
 ```
-1. pocketmine-stubs (este repo)
-   ├─ Detecta nueva versión
-   ├─ Genera stubs
-   └─ Crea PR aquí con SHA256
+Detecta nueva versión
+       ↓
+   Genera stubs
+       ↓
+  Crea Release
+       ↓
+Publica ZIP + SHA256
+```
 
-2. Mantenedor revisa PR
-   ├─ Verifica cambios
-   ├─ Merge PR
-   └─ Release publicado con stubs
-
-3. pocketmine-manifest (otro repo)
-   ├─ Detecta nuevo release en pocketmine-stubs
-   ├─ Obtiene SHA256
-   └─ Actualiza manifest.json
+### pocketmine-manifest (otro repo)
+```
+Detecta Release en pocketmine-stubs
+       ↓
+    Obtiene SHA256
+       ↓
+  Actualiza manifest
+       ↓
+    Publica cambios
 ```
 
 ---
 
 ## 📌 Próximos Pasos (Opcional)
 
-Para full automation podrías agregar:
+Para enhanced automation:
 
-1. **Auto-merge de PRs:**
-   ```yaml
-   - uses: pascalgn/automerge-action@v0.15
-     if: github.actor == 'github-actions[bot]'
-   ```
-
-2. **Notificaciones a Discord:**
+1. **Discord Notifications:**
    ```yaml
    - uses: sarisia/actions-status-discord@v1
+     with:
+       webhook_url: ${{ secrets.DISCORD_WEBHOOK }}
    ```
 
-3. **Create tag automático:**
+2. **Auto-trigger pocketmine-manifest:**
+   ```yaml
+   - uses: peter-evans/repository-dispatch@v2
+     with:
+       repository: pocketide/pocketmine-manifest
+       event-type: stubs-updated
+       client-payload: '{"version": "${{ needs.check-releases.outputs.version }}", "sha256": "${{ steps.generate.outputs.sha256 }}"}'
+   ```
+
+3. **Automatic tag creation:**
    ```bash
    git tag -a "v$VERSION"
    git push origin --tags
@@ -407,4 +354,18 @@ Para full automation podrías agregar:
 
 ---
 
-¿Necesitas algún ajuste o explicación adicional sobre este workflow?
+## 📝 Resumen
+
+| Aspecto | Detalles |
+|---------|----------|
+| **Trigger** | Cron cada 12h + manual |
+| **Verificación** | HTTP check a releases |
+| **Generación** | Python + PHP sin deps |
+| **Caché** | Acelera re-ejecuciones |
+| **Release** | Auto-publish a GitHub |
+| **Artifacts** | 5 días retenidos |
+| **Tiempo** | ~4 minutos total |
+
+---
+
+¿Preguntas o cambios adicionales?

@@ -4,22 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versión de PocketMine-MP (ej: 5.42.1)'
+        description: "Versión de PocketMine-MP (ej: 5.42.1)"
         required: true
         type: string
       skip_phpstorm:
-        description: 'Omitir phpstorm-stubs fork (más rápido)'
+        description: "Omitir phpstorm-stubs fork (más rápido)"
         required: false
         type: boolean
         default: false
       prerelease:
-        description: 'Publicar como pre-release'
+        description: "Publicar como pre-release"
         required: false
         type: boolean
         default: false
 
 permissions:
-  contents: write   # para crear Releases
+  contents: write # para crear Releases
 
 jobs:
   generate:
@@ -36,12 +36,12 @@ jobs:
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Setup PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: "8.2"
           # PHP solo se necesita para extraer el .phar; no requiere extensiones extra
 
       # ────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             "https://github.com/pmmp/PocketMine-MP/releases/tag/$VERSION")
-          
+
           if [ "$HTTP_CODE" != "200" ]; then
             echo "❌ La versión $VERSION no existe en pmmp/PocketMine-MP (HTTP $HTTP_CODE)"
             exit 1
@@ -85,14 +85,14 @@ jobs:
           if [ "${{ inputs.skip_phpstorm }}" == "true" ]; then
             SKIP_PHPSTORM_FLAG="--skip-phpstorm"
           fi
-          
+
           # El SHA256 se imprime en stdout como última línea
           SHA256=$(python generator/generate.py \
             --version="$VERSION" \
             --workdir="generator/workdir" \
             --output="generator/output" \
             $SKIP_PHPSTORM_FLAG)
-          
+
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
           echo "zip_path=generator/output/stubs-${VERSION}.zip" >> $GITHUB_OUTPUT
           echo "SHA256 del stubs.zip: $SHA256"
@@ -103,16 +103,16 @@ jobs:
       - name: Verify generated ZIP
         run: |
           ZIP="generator/output/stubs-${{ inputs.version }}.zip"
-          
+
           if [ ! -f "$ZIP" ]; then
             echo "❌ No se encontró el ZIP: $ZIP"
             exit 1
           fi
-          
+
           SIZE=$(du -sh "$ZIP" | cut -f1)
           FILES=$(unzip -l "$ZIP" | tail -1 | awk '{print $2}')
           echo "✅ ZIP verificado: $SIZE, $FILES archivos"
-          
+
           # Verificar que contiene archivos .php
           PHP_COUNT=$(unzip -l "$ZIP" | grep -c "\.php$" || true)
           if [ "$PHP_COUNT" -lt 5 ]; then
@@ -120,7 +120,7 @@ jobs:
             exit 1
           fi
           echo "✅ Archivos PHP encontrados: $PHP_COUNT"
-          
+
           # Verificar que contiene el índice de autocompletado
           if ! unzip -l "$ZIP" | grep -q "autocompletion_index.json"; then
             echo "❌ No se encontró autocompletion_index.json en el ZIP"

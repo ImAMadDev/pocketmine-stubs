@@ -117,8 +117,13 @@ def main() -> None:
         sha256 = merger.run(output_zip)
         merger._write_stats(output_zip, sha256)
 
+        # Validar que SHA256 sea válido (64 caracteres hex)
+        if not sha256 or len(sha256.strip()) != 64:
+            logger.error(f"❌ SHA256 inválido: {sha256}")
+            sys.exit(1)
+        
         # Imprimir SHA256 en stdout como última línea (lo captura GitHub Actions)
-        print(sha256)
+        print(sha256.strip())
         logger.info(f"✅ SHA256: {sha256}")
 
     except Exception as e:
