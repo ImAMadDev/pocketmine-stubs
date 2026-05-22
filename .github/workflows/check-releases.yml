@@ -134,11 +134,23 @@ jobs:
           VERSION="${{ needs.check-releases.outputs.version }}"
           echo "🚀 Generando stubs para $VERSION..."
 
-          SHA256=$(python3 generator/generate.py \
+          # Capturar la salida completa
+          FULL_OUTPUT=$(python3 generator/generate.py \
             --version="$VERSION" \
             --workdir="generator/workdir" \
             --output="generator/output" \
-            --clean)
+            --clean 2>&1)
+
+          # Extraer la última línea (que debe ser el SHA256)
+          SHA256=$(echo "$FULL_OUTPUT" | tail -1)
+
+          # Validar que sea un hash SHA256 válido (64 caracteres hex)
+          if ! [[ $SHA256 =~ ^[a-f0-9]{64}$ ]]; then
+            echo "❌ SHA256 inválido: $SHA256"
+            echo "Salida completa:"
+            echo "$FULL_OUTPUT"
+            exit 1
+          fi
 
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
           echo "✅ Stubs generados - SHA256: $SHA256"

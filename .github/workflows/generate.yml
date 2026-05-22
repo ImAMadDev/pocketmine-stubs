@@ -86,16 +86,27 @@ jobs:
             SKIP_PHPSTORM_FLAG="--skip-phpstorm"
           fi
 
-          # El SHA256 se imprime en stdout como última línea
-          SHA256=$(python generator/generate.py \
+          # Capturar la salida completa
+          FULL_OUTPUT=$(python3 generator/generate.py \
             --version="$VERSION" \
             --workdir="generator/workdir" \
             --output="generator/output" \
-            $SKIP_PHPSTORM_FLAG)
+            $SKIP_PHPSTORM_FLAG 2>&1)
+
+          # Extraer la última línea (que debe ser el SHA256)
+          SHA256=$(echo "$FULL_OUTPUT" | tail -1)
+
+          # Validar que sea un hash SHA256 válido
+          if ! [[ $SHA256 =~ ^[a-f0-9]{64}$ ]]; then
+            echo "❌ SHA256 inválido: $SHA256"
+            echo "Salida completa:"
+            echo "$FULL_OUTPUT"
+            exit 1
+          fi
 
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
           echo "zip_path=generator/output/stubs-${VERSION}.zip" >> $GITHUB_OUTPUT
-          echo "SHA256 del stubs.zip: $SHA256"
+          echo "✅ SHA256 validado: $SHA256"
 
       # ────────────────────────────────────────────────────────────
       # Verificar el ZIP generado
