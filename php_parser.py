@@ -23,7 +23,7 @@ class PHPParser:
     _RE_USE = re.compile(r"^\s*use\s+([\w\\]+)(?:\s+as\s+(\w+))?\s*;", re.MULTILINE)
 
     _RE_CLASS = re.compile(
-        r"(?P<doc>/\*\*.*?\*/\s*)?"
+        r"(?P<doc>/\*\*(?:(?!\*/).)*\*/\s*)?"
         r"(?:(?P<abstract>abstract)\s+)?(?:(?P<final>final)\s+)?"
         r"(?P<type>class|interface|trait|enum)\s+(?P<name>\w+)"
         r"(?:\s+extends\s+(?P<extends>[\w\\]+))?"
@@ -33,7 +33,7 @@ class PHPParser:
     )
 
     _RE_METHOD = re.compile(
-        r"(?P<doc>/\*\*.*?\*/\s*)?"
+        r"(?P<doc>/\*\*(?:(?!\*/).)*\*/\s*)?"
         r"(?:(?P<visibility>public|protected|private)\s+)?"
         r"(?:(?P<static>static)\s+)?"
         r"(?:(?P<abstract>abstract)\s+)?"
@@ -44,7 +44,7 @@ class PHPParser:
     )
 
     _RE_PROPERTY = re.compile(
-        r"(?P<doc>/\*\*.*?\*/\s*)?"
+        r"(?P<doc>/\*\*(?:(?!\*/).)*\*/\s*)?"
         r"(?:(?P<visibility>public|protected|private)\s+)?"
         r"(?:(?P<static>static)\s+)?"
         r"(?:(?P<readonly>readonly)\s+)?"
@@ -61,7 +61,7 @@ class PHPParser:
     )
 
     _RE_GLOBAL_FUNC = re.compile(
-        r"(?P<doc>/\*\*.*?\*/\s*)?"
+        r"(?P<doc>/\*\*(?:(?!\*/).)*\*/\s*)?"
         r"^function\s+(?P<name>\w+)\s*\((?P<params>[^)]*)\)"
         r"(?:\s*:\s*(?P<return_type>[\w\\|\?\s]+))?",
         re.DOTALL | re.IGNORECASE | re.MULTILINE,

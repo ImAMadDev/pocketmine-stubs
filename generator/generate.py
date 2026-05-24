@@ -121,7 +121,7 @@ def main() -> None:
         if not sha256 or len(sha256.strip()) != 64:
             logger.error(f"❌ SHA256 inválido: {sha256}")
             sys.exit(1)
-        
+
         # Imprimir SHA256 en stdout como última línea (lo captura GitHub Actions)
         print(sha256.strip())
         logger.info(f"✅ SHA256: {sha256}")
