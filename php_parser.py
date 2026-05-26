@@ -103,7 +103,15 @@ class PHPParser:
         if ns_match:
             result["namespace"] = ns_match.group(1)
 
-        for use_m in self._RE_USE.finditer(content):
+        class_start = len(content)
+        class_m = re.search(
+            r"\b(class|interface|trait|enum)\s+\w+", content, re.IGNORECASE
+        )
+        if class_m:
+            class_start = class_m.start()
+
+        use_content = content[:class_start]
+        for use_m in self._RE_USE.finditer(use_content):
             alias = use_m.group(2) or use_m.group(1).split("\\")[-1]
             result["uses"].append({"full_name": use_m.group(1), "alias": alias})
 
@@ -138,6 +146,8 @@ class PHPParser:
                 "methods": {},
                 "properties": {},
                 "constants": {},
+                "traits": [],
+                "uses": result["uses"],
                 "doc": self._clean_doc(m.group("doc") or ""),
                 "file_path": file_path,
                 "source": "",
@@ -148,6 +158,7 @@ class PHPParser:
                 self._parse_methods(body, info)
                 self._parse_properties(body, info)
                 self._parse_class_constants(body, info)
+                self._parse_class_traits(body, info)
             except Exception:
                 pass  # continuar con lo que se pudo parsear
 
@@ -156,7 +167,7 @@ class PHPParser:
                 if kind in ("class", "enum")
                 else ("interfaces" if kind == "interface" else "traits")
             )
-            result[bucket][name] = info
+            result[bucket][info["full_name"]] = info
 
     def _parse_methods(self, body: str, info: dict) -> None:
         if not body:
@@ -207,17 +218,31 @@ class PHPParser:
                 "type": self._infer_type(val),
             }
 
+    def _parse_class_traits(self, body: str, info: dict) -> None:
+        if not body:
+            return
+        body_without_methods = self._remove_method_bodies(body)
+        trait_use_pattern = re.compile(r"\buse\s+([^{;]+)(?:;|(?=\{))", re.IGNORECASE)
+        for match in trait_use_pattern.finditer(body_without_methods):
+            traits_raw = match.group(1)
+            for trait in traits_raw.split(","):
+                trait = trait.strip()
+                if trait:
+                    info["traits"].append(trait)
+
     def _parse_global_functions(self, content: str, result: dict) -> None:
         for m in self._RE_GLOBAL_FUNC.finditer(content):
             fname = m.group("name")
             if self._inside_class(content, m.start()):
                 continue
-            result["functions"][fname] = {
+            fqn = self._fqn(result["namespace"], fname)
+            result["functions"][fqn] = {
                 "name": fname,
                 "namespace": result["namespace"],
-                "full_name": self._fqn(result["namespace"], fname),
+                "full_name": fqn,
                 "parameters": self._parse_params(m.group("params") or ""),
                 "return_type": (m.group("return_type") or "mixed").strip(),
+                "uses": result["uses"],
                 "doc": self._clean_doc(m.group("doc") or ""),
                 "source": "",
             }
@@ -227,10 +252,11 @@ class PHPParser:
         for m in self._RE_DEFINE_CONST.finditer(content):
             cname = m.group("name")
             val = m.group("value").strip()
-            result["constants"][cname] = {
+            fqn = self._fqn(result["namespace"], cname)
+            result["constants"][fqn] = {
                 "name": cname,
                 "namespace": result["namespace"],
-                "full_name": self._fqn(result["namespace"], cname),
+                "full_name": fqn,
                 "value": val,
                 "type": self._infer_type(val),
                 "source": "",

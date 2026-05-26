@@ -278,6 +278,18 @@ class StubMerger:
         if namespace:
             lines += [f"namespace {namespace};", ""]
 
+        uses = item.get("uses", [])
+        if uses:
+            for use in uses:
+                full_name = use["full_name"]
+                alias = use["alias"]
+                last_part = full_name.split("\\")[-1]
+                if alias == last_part:
+                    lines.append(f"use {full_name};")
+                else:
+                    lines.append(f"use {full_name} as {alias};")
+            lines.append("")
+
         if item_type == "class":
             lines += self._render_class(item)
         elif item_type == "interface":
@@ -300,6 +312,21 @@ class StubMerger:
 
         if namespace:
             lines += [f"namespace {namespace};", ""]
+
+        # Collect uses from functions
+        unique_uses = {}
+        for fn in functions:
+            for use in fn.get("uses", []):
+                unique_uses[(use["full_name"], use["alias"])] = use
+
+        if unique_uses:
+            for (full_name, alias), use in sorted(unique_uses.items()):
+                last_part = full_name.split("\\")[-1]
+                if alias == last_part:
+                    lines.append(f"use {full_name};")
+                else:
+                    lines.append(f"use {full_name} as {alias};")
+            lines.append("")
 
         for fn in functions:
             lines += self._render_function(fn)
@@ -407,6 +434,12 @@ class StubMerger:
 
         lines += [decl, "{"]
 
+        traits = cls.get("traits", [])
+        if traits:
+            for trait in traits:
+                lines.append(f"    use {trait};")
+            lines.append("")
+
         for cname, cdata in (cls.get("constants") or {}).items():
             vis = cdata.get("visibility", "public")
             value = cdata.get("value", "null")
@@ -442,6 +475,25 @@ class StubMerger:
     def _render_trait(self, trait: dict) -> list[str]:
         lines = self._render_doc(trait.get("doc", ""))
         lines += [f"trait {trait['name']}", "{"]
+
+        traits = trait.get("traits", [])
+        if traits:
+            for t in traits:
+                lines.append(f"    use {t};")
+            lines.append("")
+
+        for cname, cdata in (trait.get("constants") or {}).items():
+            vis = cdata.get("visibility", "public")
+            value = cdata.get("value", "null")
+            lines.append(f"    {vis} const {cname} = {value};")
+
+        for pname, pdata in (trait.get("properties") or {}).items():
+            vis = pdata.get("visibility", "public")
+            static = "static " if pdata.get("is_static") else ""
+            readonly = "readonly " if pdata.get("is_readonly") else ""
+            ptype = pdata.get("type", "mixed")
+            lines += self._render_doc(pdata.get("doc", ""), indent="    ")
+            lines.append(f"    {vis} {static}{readonly}{ptype} ${pname};")
 
         for mdata in (trait.get("methods") or {}).values():
             lines += self._render_method(mdata)
@@ -537,6 +589,7 @@ class StubMerger:
                     "extends": d.get("extends"),
                     "implements": d.get("implements", []),
                     "is_abstract": d.get("is_abstract", False),
+                    "traits": d.get("traits", []),
                     "methods": {
                         mname: {
                             "return_type": m.get("return_type", "mixed"),
@@ -582,6 +635,7 @@ class StubMerger:
             "traits": {
                 name: {
                     "namespace": d.get("namespace"),
+                    "traits": d.get("traits", []),
                     "methods": {
                         mname: {
                             "return_type": m.get("return_type", "mixed"),
