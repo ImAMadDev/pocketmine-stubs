@@ -1,0 +1,98 @@
+name: Batch Generate & Publish Stubs (Trigger)
+
+on:
+  schedule:
+    # Corre cada 12 horas
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Límite máximo de versiones a generar (ej: 5)"
+        required: false
+        type: string
+        default: "5"
+      include_prereleases:
+        description: "Incluir pre-releases en la generación"
+        required: false
+        type: boolean
+        default: false
+      skip_phpstorm:
+        description: "Omitir phpstorm-stubs fork (más rápido)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  check-and-trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Get pending versions
+        id: pending
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LIMIT_FLAG=""
+          if [ -n "${{ inputs.limit }}" ]; then
+            LIMIT_FLAG="--limit=${{ inputs.limit }}"
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            LIMIT_FLAG="--limit=5"
+          fi
+
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.include_prereleases }}" == "true" ]; then
+            PRERELEASE_FLAG="--include-prereleases"
+          fi
+
+          # Ejecutar en modo print-pending para capturar las versiones
+          VERSIONS=$(python3 scripts/batch_generate.py \
+            --repo="${{ github.repository }}" \
+            $LIMIT_FLAG \
+            $PRERELEASE_FLAG \
+            --print-pending)
+
+          # Convertir saltos de línea a espacios en una sola línea
+          VERSIONS_LIST=$(echo "$VERSIONS" | tr '\n' ' ' | xargs)
+          echo "versions=$VERSIONS_LIST" >> $GITHUB_OUTPUT
+          echo "Pending versions found: $VERSIONS_LIST"
+
+      - name: Trigger Generate Stubs Workflows
+        if: steps.pending.outputs.versions != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SKIP_PHPSTORM="false"
+          if [ "${{ inputs.skip_phpstorm }}" == "true" ]; then
+            SKIP_PHPSTORM="true"
+          fi
+
+          for version in ${{ steps.pending.outputs.versions }}; do
+            echo "🚀 Dispatching generate.yml for version $version..."
+            
+            # Detectar si es pre-release (si contiene un guion, ej. 5.10.0-beta1)
+            PRERELEASE_VAL="false"
+            if [[ "$version" == *"-"* ]]; then
+              PRERELEASE_VAL="true"
+            fi
+
+            gh workflow run generate.yml \
+              --ref "${{ github.ref_name }}" \
+              -f version="$version" \
+              -f skip_phpstorm="$SKIP_PHPSTORM" \
+              -f prerelease="$PRERELEASE_VAL"
+            
+            # Retraso prudencial entre dispatches
+            sleep 3
+          done
