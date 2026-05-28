@@ -461,28 +461,41 @@ def main() -> None:
     # 5. Ordenar las pendientes de menor a mayor (orden ascendente)
     pending_candidates.sort(key=lambda r: semver_key(r["tag_name"]))
 
+    # Validar y limitar a las versiones que realmente procesaremos
+    to_process = []
+    for r in pending_candidates:
+        if args.limit is not None and len(to_process) >= args.limit:
+            break
+
+        tag = r["tag_name"]
+        logger.info("🔍 Validando build_info.json para candidate %s...", tag)
+        build_info = fetch_build_info(tag, token)
+        if build_info is None:
+            logger.warning("  ✗ No se pudo descargar build_info.json para %s. Saltando.", tag)
+            continue
+        missing = [f for f in REQUIRED_FIELDS if f not in build_info]
+        if missing:
+            logger.warning(
+                "  ✗ Faltan campos requeridos en build_info.json para %s: %s. Saltando.",
+                tag,
+                ", ".join(missing),
+            )
+            continue
+        to_process.append(r)
+
     if args.print_pending:
-        to_print = pending_candidates
-        if args.limit is not None:
-            to_print = pending_candidates[:args.limit]
-        for r in to_print:
+        for r in to_process:
             print(r["tag_name"])
         return
 
-    if not pending_candidates:
+    if not to_process:
         logger.info("✓ No hay versiones nuevas pendientes de generar.")
         return
 
-    logger.info("📋 Versiones pendientes detectadas (ordenadas de menor a mayor):")
-    for r in pending_candidates:
+    logger.info("📋 Versiones pendientes detectadas y validadas (ordenadas de menor a mayor):")
+    for r in to_process:
         prefix = "🔴 pre" if r.get("prerelease") else "🟢 rel"
         logger.info("   %s %s", prefix, r["tag_name"])
-
-    # Aplicar límite de generación si existe
-    to_generate = pending_candidates
-    if args.limit is not None:
-        to_generate = pending_candidates[:args.limit]
-        logger.info("   (Limitado a las primeras %d versiones)", args.limit)
 
     if args.dry_run:
         logger.info("✓ Modo dry-run completado (sin ejecutar generación).")
@@ -497,28 +510,10 @@ def main() -> None:
     success_count = 0
     fail_count = 0
 
-    for i, release in enumerate(to_generate, 1):
+    for i, release in enumerate(to_process, 1):
         tag = release["tag_name"]
         logger.info("")
-        logger.info("[%d/%d] Generando stubs para %s...", i, len(to_generate), tag)
-
-        # Validación tardía de build_info.json
-        logger.info("🔍 Validando build_info.json para %s...", tag)
-        build_info = fetch_build_info(tag, token)
-        if build_info is None:
-            logger.warning("⚠ No se pudo descargar build_info.json para %s. Saltando.", tag)
-            fail_count += 1
-            continue
-
-        missing = [f for f in REQUIRED_FIELDS if f not in build_info]
-        if missing:
-            logger.warning(
-                "⚠ Faltan campos requeridos en build_info.json para %s: %s. Saltando.",
-                tag,
-                ", ".join(missing),
-            )
-            fail_count += 1
-            continue
+        logger.info("[%d/%d] Generando stubs para %s...", i, len(to_process), tag)
 
         # Generar stubs
         success, result = generate_stubs(
@@ -540,8 +535,8 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("RESUMEN DE BATCH")
     logger.info("=" * 60)
-    logger.info("✅ Exitosas:  %d/%d", success_count, len(to_generate))
-    logger.info("❌ Fallidas:  %d/%d", fail_count, len(to_generate))
+    logger.info("✅ Exitosas:  %d/%d", success_count, len(to_process))
+    logger.info("❌ Fallidas:  %d/%d", fail_count, len(to_process))
 
     if fail_count > 0:
         sys.exit(1)

@@ -84,10 +84,10 @@ class StubMerger:
 
     def download_phar(self) -> Path:
         self.pm_dir.mkdir(parents=True, exist_ok=True)
-        phar_path = self.pm_dir / "PocketMine-MP.phar"
+        phar_path = self.pm_dir / f"PocketMine-MP-{self.version}.phar"
 
         if phar_path.exists():
-            logger.info("📦 PocketMine-MP.phar ya existe, omitiendo descarga.")
+            logger.info(f"📦 PocketMine-MP-{self.version}.phar ya existe, omitiendo descarga.")
             return phar_path
 
         url = (
