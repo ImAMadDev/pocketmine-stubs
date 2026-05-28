@@ -171,10 +171,10 @@ jobs:
           body: |
             ## Stubs para PocketMine-MP ${{ inputs.version }}
 
-            Generados automáticamente por [pocketide/pocketmine-stubs](https://github.com/pocketide/pocketmine-stubs).
-            Listos para usar con **Intelephense** en [PocketIDE](https://github.com/pocketide/pocketide).
+            Generados automáticamente por [ImAMadDev/pocketmine-stubs](https://github.com/ImAMadDev/pocketmine-stubs).
+            Listos para usar con **Intelephense** en [PocketIDE](https://github.com/ImAMadDev/pocketide).
 
-            ### 📦 Contenido del ZIP
+            ### Contenido del ZIP
 
             | Tipo | Cantidad |
             |------|----------|
@@ -184,16 +184,16 @@ jobs:
             | Funciones | ${{ steps.stats.outputs.functions }} |
             | Constantes | ${{ steps.stats.outputs.constants }} |
 
-            ### 🔐 Checksum
+            ### Checksum
 
             ```
             SHA256: ${{ steps.generate.outputs.sha256 }}
             ```
 
             Usa este valor en el campo `stubs.checksum_sha256` de
-            [pocketide/pocketmine-manifest](https://github.com/pocketide/pocketmine-manifest).
+            [ImAMadDev/pocketmine-manifest](https://github.com/ImAMadDev/pocketmine-manifest).
 
-            ### ⚙️ Cómo usarlo en manifest.json
+            ### Cómo usarlo en manifest.json
 
             ```bash
             php scripts/update-manifest.php \
