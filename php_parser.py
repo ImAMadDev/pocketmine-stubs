@@ -111,7 +111,8 @@ class PHPParser:
             class_start = class_m.start()
 
         use_content = content[:class_start]
-        for use_m in self._RE_USE.finditer(use_content):
+        use_content_clean = self._remove_comments(use_content)
+        for use_m in self._RE_USE.finditer(use_content_clean):
             alias = use_m.group(2) or use_m.group(1).split("\\")[-1]
             result["uses"].append({"full_name": use_m.group(1), "alias": alias})
 
@@ -222,8 +223,9 @@ class PHPParser:
         if not body:
             return
         body_without_methods = self._remove_method_bodies(body)
+        body_without_methods_clean = self._remove_comments(body_without_methods)
         trait_use_pattern = re.compile(r"\buse\s+([^{;]+)(?:;|(?=\{))", re.IGNORECASE)
-        for match in trait_use_pattern.finditer(body_without_methods):
+        for match in trait_use_pattern.finditer(body_without_methods_clean):
             traits_raw = match.group(1)
             for trait in traits_raw.split(","):
                 trait = trait.strip()
@@ -402,3 +404,24 @@ class PHPParser:
         except ValueError:
             pass
         return "mixed"
+
+    @staticmethod
+    def _remove_comments(content: str) -> str:
+        """
+        Removes all comments (single-line and multi-line) from a string,
+        replacing them with spaces of the same length to preserve offsets.
+        """
+        pattern = re.compile(
+            r'"(?:\\.|[^"\\])*"'
+            r"|'(?:\\.|[^'\\])*'"
+            r"|/\*.*?\*/"
+            r"|//[^\r\n]*"
+            r"|#[^\r\n]*",
+            re.DOTALL
+        )
+        def replacer(match):
+            s = match.group(0)
+            if s.startswith('/') or s.startswith('#'):
+                return " " * len(s)
+            return s
+        return pattern.sub(replacer, content)
