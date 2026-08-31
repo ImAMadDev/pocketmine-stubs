@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-batch_generate.py — Genera stubs para múltiples versiones de PocketMine-MP
+batch_generate.py — Genera stubs para múltiples versiones de PocketMine-MP y sus forks
 
 Descarga la lista de releases desde GitHub, filtra candidatos por minor versión,
 verifica cuáles ya han sido generados (comprobando archivos locales y releases de GitHub),
@@ -34,12 +34,32 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 GENERATOR_SCRIPT = PROJECT_ROOT / "generator" / "generate.py"
-
-GITHUB_API_URL = "https://api.github.com/repos/pmmp/PocketMine-MP/releases"
-BUILD_INFO_URL = (
-    "https://github.com/pmmp/PocketMine-MP/releases/download/{tag}/build_info.json"
-)
+FORKS_FILE = PROJECT_ROOT / "forks.json"
 REQUIRED_FIELDS = ("details_url", "download_url", "source_url", "php_download_url")
+
+
+# ─── Fork Config Helper ───────────────────────────────────────────────────────
+
+def load_fork_config(software: str, custom_forks_file: Path | None = None) -> dict[str, Any]:
+    forks_path = custom_forks_file or FORKS_FILE
+    forks_data: dict[str, Any] = {}
+    if forks_path.exists():
+        try:
+            forks_data = json.loads(forks_path.read_text(encoding="utf-8")).get("forks", {})
+        except Exception as e:
+            logger.warning("⚠ Error leyendo forks.json: %s", e)
+
+    cfg = forks_data.get(software.lower().strip(), {})
+    name = cfg.get("name", software.capitalize())
+    repo = cfg.get("repo", "pmmp/PocketMine-MP" if software == "pocketmine" else "")
+    tag_prefix = cfg.get("tag_prefix", "" if software == "pocketmine" else f"{software}-")
+    return {
+        "software": software.lower().strip(),
+        "name": name,
+        "repo": repo,
+        "tag_prefix": tag_prefix,
+        "type": cfg.get("type", "phar"),
+    }
 
 
 # ─── HTTP Helpers ─────────────────────────────────────────────────────────────
@@ -69,18 +89,18 @@ def fetch_json(url: str, token: str | None = None) -> Any:
 
 # ─── GitHub / Git Helpers ─────────────────────────────────────────────────────
 
-def fetch_all_releases(token: str | None) -> list[dict[str, Any]]:
-    """Descarga todos los releases de PocketMine-MP paginando la API de GitHub."""
+def fetch_all_releases(repo_slug: str, token: str | None) -> list[dict[str, Any]]:
+    """Descarga todos los releases del repositorio paginando la API de GitHub."""
     releases: list[dict[str, Any]] = []
     page = 1
 
     while True:
-        url = f"{GITHUB_API_URL}?per_page=100&page={page}"
-        logger.info("📥 Descargando releases de PMMP — página %d...", page)
+        url = f"https://api.github.com/repos/{repo_slug}/releases?per_page=100&page={page}"
+        logger.info("📥 Descargando releases de %s — página %d...", repo_slug, page)
         try:
             batch: list[dict[str, Any]] = fetch_json(url, token)
         except Exception as e:
-            logger.error("❌ Falló la descarga de releases: %s", e)
+            logger.error("❌ Falló la descarga de releases de %s: %s", repo_slug, e)
             break
 
         if not batch:
@@ -97,9 +117,9 @@ def fetch_all_releases(token: str | None) -> list[dict[str, Any]]:
     return releases
 
 
-def fetch_build_info(tag: str, token: str | None) -> dict[str, Any] | None:
-    """Descarga build_info.json desde los release assets de GitHub."""
-    url = BUILD_INFO_URL.format(tag=tag)
+def fetch_build_info(tag: str, repo: str, token: str | None) -> dict[str, Any] | None:
+    """Descarga build_info.json desde los release assets de GitHub si existe."""
+    url = f"https://github.com/{repo}/releases/download/{tag}/build_info.json"
     try:
         return fetch_json(url, token)
     except urllib.error.HTTPError as e:
@@ -122,7 +142,7 @@ def get_repo_slug_from_git() -> str | None:
             ["git", "config", "--get", "remote.origin.url"],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
         url = result.stdout.strip()
         if "github.com" in url:
@@ -143,7 +163,7 @@ def get_repo_slug(args_repo: str | None) -> str | None:
     return get_repo_slug_from_git()
 
 
-def get_existing_github_releases(repo_slug: str | None, token: str | None) -> set[str]:
+def get_existing_github_releases(repo_slug: str | None, tag_prefix: str, token: str | None) -> set[str]:
     """Consulta la API de GitHub para obtener los tags de los releases existentes en el repo de stubs."""
     if not repo_slug:
         logger.warning("⚠ No se especificó el repositorio de stubs. No se verificará en GitHub.")
@@ -160,9 +180,19 @@ def get_existing_github_releases(repo_slug: str | None, token: str | None) -> se
             if not data:
                 break
             for release in data:
-                tag = release.get("tag_name")
+                # Ignorar borradores vacíos para que sean regenerados y publicados limpiamente
+                if release.get("draft", False) and not release.get("assets", []):
+                    continue
+                tag = release.get("tag_name", "")
                 if tag:
-                    tags.add(tag)
+                    if tag_prefix and tag.startswith(tag_prefix):
+                        version = tag[len(tag_prefix):]
+                        tags.add(version)
+                    elif not tag_prefix and not "-" in tag.split(".")[0]:
+                        # Release estándar sin prefijo
+                        tags.add(tag)
+                    else:
+                        tags.add(tag)
             if len(data) < 100:
                 break
             page += 1
@@ -172,17 +202,17 @@ def get_existing_github_releases(repo_slug: str | None, token: str | None) -> se
     return tags
 
 
-def get_existing_local_zips(output_dir: Path) -> set[str]:
+def get_existing_local_zips(output_dir: Path, software: str) -> set[str]:
     """Lista las versiones ya generadas localmente buscando stubs-*.zip."""
     existing = set()
+    prefix = "stubs-" if software == "pocketmine" else f"stubs-{software}-"
     if output_dir.exists():
-        for path in output_dir.glob("stubs-*.zip"):
-            # stubs-{version}.zip
-            version = path.name[len("stubs-"):-len(".zip")]
+        for path in output_dir.glob(f"{prefix}*.zip"):
+            version = path.name[len(prefix):-len(".zip")]
             if version:
                 existing.add(version)
     if existing:
-        logger.info("🔍 Detectadas %d versiones locales en %s", len(existing), output_dir)
+        logger.info("🔍 Detectadas %d versiones locales en %s para %s", len(existing), output_dir, software)
     return existing
 
 
@@ -242,31 +272,31 @@ def filter_candidates(
         len(candidates),
     )
 
-    # Conservar solo el patch más reciente para cada rama minor (primer match en orden descendente)
+    # Conservar solo el patch más reciente para cada rama minor
     seen: dict[str, str] = {}
     result = []
 
     for r in candidates:
         tag = r.get("tag_name", "")
-        minor = extract_minor(tag)
+        clean_tag = tag.lstrip("v")
+        minor = extract_minor(clean_tag)
+
         if minor is None:
             result.append(r)
             continue
+
         if minor not in seen:
             seen[minor] = tag
             result.append(r)
         else:
             logger.debug(
-                "  ✘ %s descartada (ya tenemos %s para %s)", tag, seen[minor], minor
+                "  ↷ Descartado %s (ya cubierto por %s en rama %s)",
+                tag,
+                seen[minor],
+                minor,
             )
 
-    removed = len(candidates) - len(result)
-    logger.info(
-        "📊 Filtro minor: %d → %d candidatos (%d patches anteriores descartados)",
-        len(candidates),
-        len(result),
-        removed,
-    )
+    logger.info("🎯 Candidatos tras deduplicar por minor: %d", len(result))
     return result
 
 
@@ -274,23 +304,30 @@ def filter_candidates(
 
 def generate_stubs(
     version: str,
+    software: str,
     workdir: Path,
     output_dir: Path,
     skip_phpstorm: bool = False,
     clean: bool = True,
+    repo: str | None = None,
+    forks_file: Path | None = None,
 ) -> tuple[bool, str | None]:
     """Genera stubs para una versión ejecutando generator/generate.py."""
     cmd = [
         "python3",
         str(GENERATOR_SCRIPT),
         f"--version={version}",
+        f"--software={software}",
         f"--workdir={workdir}",
         f"--output={output_dir}",
     ]
 
+    if repo:
+        cmd.append(f"--repo={repo}")
+    if forks_file:
+        cmd.append(f"--forks-file={forks_file}")
     if skip_phpstorm:
         cmd.append("--skip-phpstorm")
-
     if clean:
         cmd.append("--clean")
 
@@ -333,7 +370,25 @@ def generate_stubs(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Genera stubs PHP de PocketMine-MP en batch de forma unificada"
+        description="Genera stubs PHP de PocketMine-MP y sus forks en batch de forma unificada"
+    )
+    parser.add_argument(
+        "--software",
+        type=str,
+        default="pocketmine",
+        help="Software o fork a procesar (default: pocketmine, ej: altay)",
+    )
+    parser.add_argument(
+        "--forks-file",
+        type=Path,
+        default=FORKS_FILE,
+        help="Ruta personalizada al archivo forks.json",
+    )
+    parser.add_argument(
+        "--source-repo",
+        type=str,
+        default=None,
+        help="Repositorio fuente de releases (sobrescribe forks.json)",
     )
     parser.add_argument(
         "--token",
@@ -345,7 +400,7 @@ def parse_args() -> argparse.Namespace:
         "--repo",
         type=str,
         default=None,
-        help="Repositorio de stubs actual para verificar releases (ej: pocketide/pocketmine-stubs)",
+        help="Repositorio de stubs actual para verificar releases (ej: ImAMadDev/pocketmine-stubs)",
     )
     parser.add_argument(
         "--workdir",
@@ -417,7 +472,13 @@ def main() -> None:
         logger.error("❌ No se encontró el generador: %s", GENERATOR_SCRIPT)
         sys.exit(1)
 
-    # Token y configuración del repositorio de stubs
+    fork_cfg = load_fork_config(args.software, args.forks_file)
+    source_repo = args.source_repo or fork_cfg["repo"]
+
+    if not source_repo:
+        logger.error("❌ No se pudo determinar el repositorio fuente para %s. Usa --source-repo.", args.software)
+        sys.exit(1)
+
     token = _get_token(args.token)
     if token:
         logger.info("🔑 Usando token de GitHub")
@@ -429,13 +490,13 @@ def main() -> None:
     repo_slug = get_repo_slug(args.repo)
 
     # 1. Obtener versiones ya existentes
-    existing_github = get_existing_github_releases(repo_slug, token)
-    existing_local = get_existing_local_zips(args.output)
+    existing_github = get_existing_github_releases(repo_slug, fork_cfg["tag_prefix"], token)
+    existing_local = get_existing_local_zips(args.output, args.software)
     already_generated = existing_github.union(existing_local)
 
     # Modo de solo consulta
     if args.generated_only:
-        logger.info("📊 Resumen de versiones ya generadas:")
+        logger.info("📊 Resumen de versiones ya generadas para %s:", fork_cfg["name"])
         logger.info("   Total local:  %d", len(existing_local))
         logger.info("   Total GitHub: %d", len(existing_github))
         logger.info("   Total único:  %d", len(already_generated))
@@ -443,10 +504,10 @@ def main() -> None:
             logger.info("   ✓ %s", v)
         return
 
-    # 2. Descargar todos los releases de PMMP
-    logger.info("🚀 Iniciando descarga de releases de pmmp/PocketMine-MP...")
-    raw_releases = fetch_all_releases(token)
-    logger.info("📦 Total de releases descargados de PMMP: %d", len(raw_releases))
+    # 2. Descargar todos los releases del software
+    logger.info("🚀 Iniciando descarga de releases de %s (%s)...", fork_cfg["name"], source_repo)
+    raw_releases = fetch_all_releases(source_repo, token)
+    logger.info("📦 Total de releases descargados: %d", len(raw_releases))
 
     # 3. Filtrar candidatos
     candidates = filter_candidates(raw_releases, args.include_prereleases)
@@ -454,45 +515,48 @@ def main() -> None:
     # 4. Determinar pendientes
     pending_candidates = []
     for r in candidates:
-        tag = r["tag_name"]
-        if tag not in already_generated:
+        tag = r["tag_name"].lstrip("v")
+        if tag not in already_generated and r["tag_name"] not in already_generated:
             pending_candidates.append(r)
 
-    # 5. Ordenar las pendientes de menor a mayor (orden ascendente)
-    pending_candidates.sort(key=lambda r: semver_key(r["tag_name"]))
+    # 5. Ordenar las pendientes de menor a mayor
+    pending_candidates.sort(key=lambda r: semver_key(r["tag_name"].lstrip("v")))
 
-    # Validar y limitar a las versiones que realmente procesaremos
+    # Validar y limitar a las versiones que procesaremos
     to_process = []
     for r in pending_candidates:
         if args.limit is not None and len(to_process) >= args.limit:
             break
 
-        tag = r["tag_name"]
-        logger.info("🔍 Validando build_info.json para candidate %s...", tag)
-        build_info = fetch_build_info(tag, token)
-        if build_info is None:
-            logger.warning("  ✗ No se pudo descargar build_info.json para %s. Saltando.", tag)
-            continue
-        missing = [f for f in REQUIRED_FIELDS if f not in build_info]
-        if missing:
-            logger.warning(
-                "  ✗ Faltan campos requeridos en build_info.json para %s: %s. Saltando.",
-                tag,
-                ", ".join(missing),
-            )
-            continue
+        tag = r["tag_name"].lstrip("v")
+        # Validación de build_info.json solo para pmmp
+        if args.software == "pocketmine":
+            logger.info("🔍 Validando build_info.json para candidate %s...", tag)
+            build_info = fetch_build_info(r["tag_name"], source_repo, token)
+            if build_info is None:
+                logger.warning("  ✗ No se pudo descargar build_info.json para %s. Saltando.", tag)
+                continue
+            missing = [f for f in REQUIRED_FIELDS if f not in build_info]
+            if missing:
+                logger.warning(
+                    "  ✗ Faltan campos requeridos en build_info.json para %s: %s. Saltando.",
+                    tag,
+                    ", ".join(missing),
+                )
+                continue
+
         to_process.append(r)
 
     if args.print_pending:
         for r in to_process:
-            print(r["tag_name"])
+            print(r["tag_name"].lstrip("v"))
         return
 
     if not to_process:
-        logger.info("✓ No hay versiones nuevas pendientes de generar.")
+        logger.info("✓ No hay versiones nuevas pendientes de generar para %s.", fork_cfg["name"])
         return
 
-    logger.info("📋 Versiones pendientes detectadas y validadas (ordenadas de menor a mayor):")
+    logger.info("📋 Versiones pendientes detectadas (%s, ordenadas de menor a mayor):", fork_cfg["name"])
     for r in to_process:
         prefix = "🔴 pre" if r.get("prerelease") else "🟢 rel"
         logger.info("   %s %s", prefix, r["tag_name"])
@@ -504,36 +568,39 @@ def main() -> None:
     # 6. Ejecutar la generación secuencial
     logger.info("")
     logger.info("=" * 60)
-    logger.info("INICIANDO GENERACIÓN EN BATCH")
+    logger.info("INICIANDO GENERACIÓN EN BATCH (%s)", fork_cfg["name"].upper())
     logger.info("=" * 60)
 
     success_count = 0
     fail_count = 0
 
     for i, release in enumerate(to_process, 1):
-        tag = release["tag_name"]
+        raw_tag = release["tag_name"]
+        version = raw_tag.lstrip("v")
         logger.info("")
-        logger.info("[%d/%d] Generando stubs para %s...", i, len(to_process), tag)
+        logger.info("[%d/%d] Generando stubs para %s %s...", i, len(to_process), fork_cfg["name"], version)
 
-        # Generar stubs
         success, result = generate_stubs(
-            tag,
+            version=version,
+            software=args.software,
             workdir=args.workdir,
             output_dir=args.output,
             skip_phpstorm=args.skip_phpstorm,
             clean=not args.no_clean,
+            repo=args.source_repo,
+            forks_file=args.forks_file,
         )
 
         if success:
             success_count += 1
         else:
             fail_count += 1
-            logger.warning("⚠ Falló la generación de stubs para %s: %s", tag, result)
+            logger.warning("⚠ Falló la generación de stubs para %s: %s", version, result)
 
     # Resumen
     logger.info("")
     logger.info("=" * 60)
-    logger.info("RESUMEN DE BATCH")
+    logger.info("RESUMEN DE BATCH (%s)", fork_cfg["name"].upper())
     logger.info("=" * 60)
     logger.info("✅ Exitosas:  %d/%d", success_count, len(to_process))
     logger.info("❌ Fallidas:  %d/%d", fail_count, len(to_process))

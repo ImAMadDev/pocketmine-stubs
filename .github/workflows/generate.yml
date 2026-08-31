@@ -4,9 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Versión de PocketMine-MP (ej: 5.42.1)"
+        description: "Versión del software (ej: 5.42.1 o 1.0.0)"
         required: true
         type: string
+      software:
+        description: "Software/Fork (ej: pocketmine, altay, prismarine o nombre en forks.json)"
+        required: false
+        type: string
+        default: "pocketmine"
+      repo:
+        description: "Repositorio GitHub owner/repo (opcional, sobrescribe forks.json)"
+        required: false
+        type: string
+        default: ""
+      phar_url:
+        description: "URL directa o template del .phar (opcional)"
+        required: false
+        type: string
+        default: ""
+      source_url:
+        description: "URL directa o template de fuentes .zip (opcional)"
+        required: false
+        type: string
+        default: ""
       skip_phpstorm:
         description: "Omitir phpstorm-stubs fork (más rápido)"
         required: false
@@ -20,6 +40,10 @@ on:
 
 permissions:
   contents: write # para crear Releases
+
+concurrency:
+  group: generate-${{ inputs.software }}-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
   generate:
@@ -42,36 +66,93 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
-          # PHP solo se necesita para extraer el .phar; no requiere extensiones extra
 
       # ────────────────────────────────────────────────────────────
-      # Verificar que la versión existe en GitHub
+      # Resolver configuración del software/fork
       # ────────────────────────────────────────────────────────────
-      - name: Verify PocketMine-MP release exists
+      - name: Resolve Fork Configuration
+        id: resolve
+        run: |
+          python3 - << 'EOF'
+          import json
+          import os
+          from pathlib import Path
+
+          software = os.environ.get("INPUT_SOFTWARE", "pocketmine").lower().strip()
+          version = os.environ.get("INPUT_VERSION", "").strip()
+          custom_repo = os.environ.get("INPUT_REPO", "").strip()
+
+          forks_file = Path("forks.json")
+          forks_data = {}
+          if forks_file.exists():
+              try:
+                  forks_data = json.loads(forks_file.read_text(encoding="utf-8")).get("forks", {})
+              except Exception as e:
+                  print(f"::warning::Error reading forks.json: {e}")
+
+          cfg = forks_data.get(software, {})
+          name = cfg.get("name", software.capitalize())
+          repo = custom_repo or cfg.get("repo", "")
+          tag_prefix = cfg.get("tag_prefix", "" if software == "pocketmine" else f"{software}-")
+          release_tag = f"{tag_prefix}{version}"
+          zip_prefix = "stubs" if software == "pocketmine" else f"stubs-{software}"
+          stats_prefix = "stats" if software == "pocketmine" else f"stats-{software}"
+          zip_name = f"{zip_prefix}-{version}.zip"
+          stats_name = f"{stats_prefix}-{version}.json"
+          release_title = cfg.get("release_name_template", f"Stubs {name} {{version}}").format(version=version)
+
+          verify_url = ""
+          if repo:
+              verify_url = f"https://github.com/{repo}/releases/tag/{version}"
+
+          def set_out(k, v):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"{k}={v}\n")
+
+          set_out("software", software)
+          set_out("software_name", name)
+          set_out("repo", repo)
+          set_out("release_tag", release_tag)
+          set_out("zip_name", zip_name)
+          set_out("stats_name", stats_name)
+          set_out("release_title", release_title)
+          set_out("verify_url", verify_url)
+          print(f"✅ Config resolved: {name} (tag: {release_tag}, zip: {zip_name})")
+          EOF
+        env:
+          INPUT_SOFTWARE: ${{ inputs.software }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_REPO: ${{ inputs.repo }}
+
+      # ────────────────────────────────────────────────────────────
+      # Verificar que la versión existe en GitHub (si aplica)
+      # ────────────────────────────────────────────────────────────
+      - name: Verify release exists
         id: verify
         run: |
-          VERSION="${{ inputs.version }}"
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://github.com/pmmp/PocketMine-MP/releases/tag/$VERSION")
-
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ La versión $VERSION no existe en pmmp/PocketMine-MP (HTTP $HTTP_CODE)"
-            exit 1
+          VERIFY_URL="${{ steps.resolve.outputs.verify_url }}"
+          if [ -n "$VERIFY_URL" ]; then
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$VERIFY_URL")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "⚠️ Aviso: $VERIFY_URL retornó HTTP $HTTP_CODE. Intentando continuar por si es un tag git o URL directa..."
+            else
+              echo "✅ Versión verificada en $VERIFY_URL"
+            fi
           fi
-          echo "✅ Versión $VERSION verificada."
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
 
       # ────────────────────────────────────────────────────────────
-      # Caché de workdir (descarga del phar y phpstorm-stubs)
+      # Caché de workdir
       # ────────────────────────────────────────────────────────────
       - name: Cache downloaded files
         uses: actions/cache@v4
         with:
           path: |
-            generator/workdir/pocketmine_phar
+            generator/workdir/server_sources
             generator/workdir/phpstorm_stubs_fork
-          key: stubs-downloads-${{ inputs.version }}
+          key: stubs-downloads-${{ steps.resolve.outputs.software }}-${{ inputs.version }}
           restore-keys: |
+            stubs-downloads-${{ steps.resolve.outputs.software }}-
             stubs-downloads-
 
       # ────────────────────────────────────────────────────────────
@@ -81,17 +162,30 @@ jobs:
         id: generate
         run: |
           VERSION="${{ steps.verify.outputs.version }}"
-          SKIP_PHPSTORM_FLAG=""
+          SOFTWARE="${{ steps.resolve.outputs.software }}"
+          
+          ARGS=(
+            "--version=$VERSION"
+            "--software=$SOFTWARE"
+            "--workdir=generator/workdir"
+            "--output=generator/output"
+          )
+
+          if [ -n "${{ inputs.repo }}" ]; then
+            ARGS+=("--repo=${{ inputs.repo }}")
+          fi
+          if [ -n "${{ inputs.phar_url }}" ]; then
+            ARGS+=("--phar-url=${{ inputs.phar_url }}")
+          fi
+          if [ -n "${{ inputs.source_url }}" ]; then
+            ARGS+=("--source-url=${{ inputs.source_url }}")
+          fi
           if [ "${{ inputs.skip_phpstorm }}" == "true" ]; then
-            SKIP_PHPSTORM_FLAG="--skip-phpstorm"
+            ARGS+=("--skip-phpstorm")
           fi
 
           # Capturar la salida completa
-          FULL_OUTPUT=$(python3 generator/generate.py \
-            --version="$VERSION" \
-            --workdir="generator/workdir" \
-            --output="generator/output" \
-            $SKIP_PHPSTORM_FLAG 2>&1)
+          FULL_OUTPUT=$(python3 generator/generate.py "${ARGS[@]}" 2>&1)
 
           # Extraer la última línea (que debe ser el SHA256)
           SHA256=$(echo "$FULL_OUTPUT" | tail -1)
@@ -105,7 +199,7 @@ jobs:
           fi
 
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-          echo "zip_path=generator/output/stubs-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "zip_path=generator/output/${{ steps.resolve.outputs.zip_name }}" >> $GITHUB_OUTPUT
           echo "✅ SHA256 validado: $SHA256"
 
       # ────────────────────────────────────────────────────────────
@@ -113,7 +207,7 @@ jobs:
       # ────────────────────────────────────────────────────────────
       - name: Verify generated ZIP
         run: |
-          ZIP="generator/output/stubs-${{ inputs.version }}.zip"
+          ZIP="generator/output/${{ steps.resolve.outputs.zip_name }}"
 
           if [ ! -f "$ZIP" ]; then
             echo "❌ No se encontró el ZIP: $ZIP"
@@ -124,7 +218,6 @@ jobs:
           FILES=$(unzip -l "$ZIP" | tail -1 | awk '{print $2}')
           echo "✅ ZIP verificado: $SIZE, $FILES archivos"
 
-          # Verificar que contiene archivos .php
           PHP_COUNT=$(unzip -l "$ZIP" | grep -c "\.php$" || true)
           if [ "$PHP_COUNT" -lt 5 ]; then
             echo "❌ El ZIP contiene menos de 5 archivos .php ($PHP_COUNT)"
@@ -132,7 +225,6 @@ jobs:
           fi
           echo "✅ Archivos PHP encontrados: $PHP_COUNT"
 
-          # Verificar que contiene el índice de autocompletado
           if ! unzip -l "$ZIP" | grep -q "autocompletion_index.json"; then
             echo "❌ No se encontró autocompletion_index.json en el ZIP"
             exit 1
@@ -140,18 +232,18 @@ jobs:
           echo "✅ autocompletion_index.json presente"
 
       # ────────────────────────────────────────────────────────────
-      # Publicar como GitHub Release
+      # Leer estadísticas
       # ────────────────────────────────────────────────────────────
       - name: Read stats file
         id: stats
         run: |
-          STATS_FILE="generator/output/stats-${{ inputs.version }}.json"
+          STATS_FILE="generator/output/${{ steps.resolve.outputs.stats_name }}"
           if [ -f "$STATS_FILE" ]; then
-            CLASSES=$(jq -r '.classes' "$STATS_FILE")
-            INTERFACES=$(jq -r '.interfaces' "$STATS_FILE")
-            TRAITS=$(jq -r '.traits' "$STATS_FILE")
-            FUNCTIONS=$(jq -r '.functions' "$STATS_FILE")
-            CONSTANTS=$(jq -r '.constants' "$STATS_FILE")
+            CLASSES=$(jq -r '.classes // 0' "$STATS_FILE")
+            INTERFACES=$(jq -r '.interfaces // 0' "$STATS_FILE")
+            TRAITS=$(jq -r '.traits // 0' "$STATS_FILE")
+            FUNCTIONS=$(jq -r '.functions // 0' "$STATS_FILE")
+            CONSTANTS=$(jq -r '.constants // 0' "$STATS_FILE")
             echo "classes=$CLASSES" >> $GITHUB_OUTPUT
             echo "interfaces=$INTERFACES" >> $GITHUB_OUTPUT
             echo "traits=$TRAITS" >> $GITHUB_OUTPUT
@@ -159,20 +251,38 @@ jobs:
             echo "constants=$CONSTANTS" >> $GITHUB_OUTPUT
           fi
 
+      # ────────────────────────────────────────────────────────────
+      # Limpiar draft o release huérfano previo (para evitar duplicados vacíos)
+      # ────────────────────────────────────────────────────────────
+      - name: Clean previous draft release if exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.resolve.outputs.release_tag }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "🧹 Eliminando release previo para $TAG antes de recrearlo..."
+            gh release delete "$TAG" --yes --cleanup-tag || true
+          fi
+
+      # ────────────────────────────────────────────────────────────
+      # Publicar como GitHub Release definitivo
+      # ────────────────────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version }}
-          name: "Stubs PocketMine-MP ${{ inputs.version }}"
+          tag_name: ${{ steps.resolve.outputs.release_tag }}
+          name: ${{ steps.resolve.outputs.release_title }}
+          draft: false
           prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
           files: |
-            generator/output/stubs-${{ inputs.version }}.zip
-            generator/output/stats-${{ inputs.version }}.json
+            generator/output/${{ steps.resolve.outputs.zip_name }}
+            generator/output/${{ steps.resolve.outputs.stats_name }}
           body: |
-            ## Stubs para PocketMine-MP ${{ inputs.version }}
+            ## Stubs para ${{ steps.resolve.outputs.software_name }} ${{ inputs.version }}
 
             Generados automáticamente por [ImAMadDev/pocketmine-stubs](https://github.com/ImAMadDev/pocketmine-stubs).
-            Listos para usar con **Intelephense** en [PocketIDE](https://github.com/ImAMadDev/pocketide).
+            Listos para usar con **Intelephense** en [Deepslate](https://github.com/ImAMadDev/Deepslate).
 
             ### Contenido del ZIP
 
@@ -190,18 +300,44 @@ jobs:
             SHA256: ${{ steps.generate.outputs.sha256 }}
             ```
 
-            Usa este valor en el campo `stubs.checksum_sha256` de
-            [ImAMadDev/pocketmine-manifest](https://github.com/ImAMadDev/pocketmine-manifest).
-
             ### Cómo usarlo en manifest.json
 
             ```bash
             php scripts/update-manifest.php \
+              --software=${{ steps.resolve.outputs.software }} \
               --version=${{ inputs.version }} \
               --stubs-sha256=${{ steps.generate.outputs.sha256 }}
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ────────────────────────────────────────────────────────────
+      # Notificar automáticamente a pocketmine-manifest
+      # ────────────────────────────────────────────────────────────
+      - name: Trigger pocketmine-manifest update
+        if: env.MANIFEST_DISPATCH_PAT != ''
+        env:
+          MANIFEST_DISPATCH_PAT: ${{ secrets.MANIFEST_DISPATCH_PAT }}
+        run: |
+          echo "🚀 Notificando a ImAMadDev/pocketmine-manifest sobre la versión ${{ inputs.version }} (${{ steps.resolve.outputs.software }})..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $MANIFEST_DISPATCH_PAT" \
+            https://api.github.com/repos/ImAMadDev/pocketmine-manifest/dispatches \
+            -d "{
+              \"event_type\": \"stubs-released\",
+              \"client_payload\": {
+                \"software\": \"${{ steps.resolve.outputs.software }}\",
+                \"version\": \"${{ inputs.version }}\",
+                \"sha256\": \"${{ steps.generate.outputs.sha256 }}\"
+              }
+            }")
+
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "✅ Dispatch enviado exitosamente a pocketmine-manifest (HTTP 204)"
+          else
+            echo "⚠️ Aviso: El dispatch retornó HTTP $HTTP_CODE (verifica permisos del PAT)"
+          fi
 
       # ────────────────────────────────────────────────────────────
       # Resumen del job
@@ -212,7 +348,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Software | \`${{ steps.resolve.outputs.software_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Versión | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag Release | \`${{ steps.resolve.outputs.release_tag }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| SHA256 | \`${{ steps.generate.outputs.sha256 }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Clases | ${{ steps.stats.outputs.classes }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Funciones | ${{ steps.stats.outputs.functions }} |" >> $GITHUB_STEP_SUMMARY
@@ -220,6 +358,7 @@ jobs:
           echo "### Siguiente paso" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "php scripts/update-manifest.php \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --software=${{ steps.resolve.outputs.software }} \\" >> $GITHUB_STEP_SUMMARY
           echo "  --version=${{ inputs.version }} \\" >> $GITHUB_STEP_SUMMARY
           echo "  --stubs-sha256=${{ steps.generate.outputs.sha256 }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

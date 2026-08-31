@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-generate.py — PocketIDE / pocketmine-stubs
-Punto de entrada CLI para generar stubs de PocketMine-MP.
+generate.py — Deepslate / pocketmine-stubs
+Punto de entrada CLI para generar stubs de PocketMine-MP y cualquier fork.
 
 Uso:
-  python generate.py --version=5.42.1 [--workdir=./workdir] [--output=./output]
+  python generate.py --version=5.42.1 [--software=pocketmine] [--workdir=./workdir] [--output=./output]
+  python generate.py --software=altay --version=1.0.0
+  python generate.py --software=custom --repo=owner/repo --version=1.0.0
+  python generate.py --software=custom --source-path=/path/to/server/src --version=1.0.0
 
 Produce:
-  output/stubs-5.42.1.zip   → stubs comprimidos para publicar como GitHub Release
-  output/stats-5.42.1.json  → estadísticas de la generación
+  output/stubs-[software-]X.Y.Z.zip   → stubs comprimidos para publicar como GitHub Release
+  output/stats-[software-]X.Y.Z.json  → estadísticas de la generación
   STDOUT: SHA256 del ZIP en la última línea (usado por GitHub Actions)
 """
 
@@ -42,12 +45,47 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Genera stubs PHP de PocketMine-MP para PocketIDE / Intelephense"
+        description="Genera stubs PHP de PocketMine-MP y sus forks para Deepslate / Intelephense"
     )
     parser.add_argument(
         "--version",
         required=True,
-        help="Versión de PocketMine-MP a procesar (ej: 5.42.1)",
+        help="Versión del software a procesar (ej: 5.42.1 o 1.0.0)",
+    )
+    parser.add_argument(
+        "--software",
+        default="pocketmine",
+        help="Nombre/identificador del fork o servidor (default: pocketmine, ej: altay, prismarine)",
+    )
+    parser.add_argument(
+        "--repo",
+        default=None,
+        help="Repositorio GitHub en formato owner/repo (ej: altayofficial/Altay)",
+    )
+    parser.add_argument(
+        "--phar-url",
+        default=None,
+        help="URL directa o plantilla de descarga del archivo .phar (soporta {version})",
+    )
+    parser.add_argument(
+        "--source-url",
+        default=None,
+        help="URL directa o plantilla de descarga de código fuente en .zip (soporta {version})",
+    )
+    parser.add_argument(
+        "--source-path",
+        default=None,
+        help="Ruta local a un archivo .phar, .zip o directorio fuente",
+    )
+    parser.add_argument(
+        "--phar-name",
+        default=None,
+        help="Nombre del archivo PHAR esperado en releases (ej: PocketMine-MP.phar o Altay.phar)",
+    )
+    parser.add_argument(
+        "--forks-file",
+        default=None,
+        help="Ruta personalizada al archivo de configuración forks.json",
     )
     parser.add_argument(
         "--workdir",
@@ -88,7 +126,17 @@ def main() -> None:
         logger.info(f"🧹 Limpiando workdir {workdir}")
         shutil.rmtree(workdir)
 
-    merger = StubMerger(workdir=workdir, version=args.version)
+    merger = StubMerger(
+        workdir=workdir,
+        version=args.version,
+        software=args.software,
+        repo=args.repo,
+        phar_url=args.phar_url,
+        source_url=args.source_url,
+        source_path=args.source_path,
+        phar_name=args.phar_name,
+        forks_file=args.forks_file,
+    )
 
     # Override para omitir phpstorm fork si se pide
     if args.skip_phpstorm:
@@ -97,9 +145,8 @@ def main() -> None:
             import time
 
             t0 = time.time()
-            phar = merger.download_phar()
-            extracted = merger.extract_phar(phar)
-            merger.parse_pocketmine(extracted)
+            extracted = merger.acquire_and_extract_source()
+            merger.parse_server(extracted)
             merger.generate_stubs()
             sha256 = merger.zip_stubs(output_zip)
             logger.info(f"🏁 Completado en {round(time.time() - t0, 1)}s")
@@ -107,9 +154,11 @@ def main() -> None:
 
         merger.run = run_without_phpstorm
 
-    output_zip = output_dir / f"stubs-{args.version}.zip"
+    software_clean = args.software.lower().strip()
+    zip_prefix = f"stubs-{software_clean}" if software_clean != "pocketmine" else "stubs"
+    output_zip = output_dir / f"{zip_prefix}-{args.version}.zip"
 
-    logger.info(f"🚀 Generando stubs para PocketMine-MP {args.version}")
+    logger.info(f"🚀 Generando stubs para {merger.software_display_name} {args.version}")
     logger.info(f"   workdir:    {workdir}")
     logger.info(f"   output zip: {output_zip}")
 

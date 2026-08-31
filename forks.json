@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "forks": {
+    "pocketmine": {
+      "name": "PocketMine-MP",
+      "repo": "pmmp/PocketMine-MP",
+      "type": "phar",
+      "phar_url_template": "https://github.com/pmmp/PocketMine-MP/releases/download/{version}/PocketMine-MP.phar",
+      "phar_latest_url": "https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar",
+      "source_url_template": "https://github.com/pmmp/PocketMine-MP/archive/refs/tags/{version}.zip",
+      "phar_name": "PocketMine-MP.phar",
+      "tag_prefix": "",
+      "release_name_template": "Stubs PocketMine-MP {version}",
+      "description": "Official PocketMine-MP server software"
+    },
+    "axolotl-pm": {
+      "name": "Axolotl-PM",
+      "repo": "axolotl-pm/PocketMine-MP",
+      "type": "phar",
+      "phar_url_template": "https://github.com/axolotl-pm/PocketMine-MP/releases/download/{version}/PocketMine-MP.phar",
+      "phar_latest_url": "https://github.com/axolotl-pm/PocketMine-MP/releases/latest/download/PocketMine-MP.phar",
+      "source_url_template": "https://github.com/axolotl-pm/PocketMine-MP/archive/refs/tags/{version}.zip",
+      "phar_name": "PocketMine-MP.phar",
+      "tag_prefix": "axolotl-",
+      "release_name_template": "Stubs Axolotl-PM {version}",
+      "description": "High-performance PocketMine-MP fork"
+    }
+  }
+}

@@ -6,6 +6,11 @@ on:
     - cron: "0 */12 * * *"
   workflow_dispatch:
     inputs:
+      software:
+        description: "Software o fork a procesar (default: pocketmine, ej: altay)"
+        required: false
+        type: string
+        default: "pocketmine"
       limit:
         description: "Límite máximo de versiones a generar (ej: 5)"
         required: false
@@ -26,6 +31,10 @@ permissions:
   actions: write
   contents: read
 
+concurrency:
+  group: batch-generate
+  cancel-in-progress: false
+
 jobs:
   check-and-trigger:
     runs-on: ubuntu-latest
@@ -44,6 +53,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          SOFTWARE="${{ inputs.software || 'pocketmine' }}"
           LIMIT_FLAG=""
           if [ -n "${{ inputs.limit }}" ]; then
             LIMIT_FLAG="--limit=${{ inputs.limit }}"
@@ -58,6 +68,7 @@ jobs:
 
           # Ejecutar en modo print-pending para capturar las versiones
           VERSIONS=$(python3 scripts/batch_generate.py \
+            --software="$SOFTWARE" \
             --repo="${{ github.repository }}" \
             $LIMIT_FLAG \
             $PRERELEASE_FLAG \
@@ -66,20 +77,22 @@ jobs:
           # Convertir saltos de línea a espacios en una sola línea
           VERSIONS_LIST=$(echo "$VERSIONS" | tr '\n' ' ' | xargs)
           echo "versions=$VERSIONS_LIST" >> $GITHUB_OUTPUT
-          echo "Pending versions found: $VERSIONS_LIST"
+          echo "software=$SOFTWARE" >> $GITHUB_OUTPUT
+          echo "Pending versions found for $SOFTWARE: $VERSIONS_LIST"
 
       - name: Trigger Generate Stubs Workflows
         if: steps.pending.outputs.versions != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          SOFTWARE="${{ steps.pending.outputs.software }}"
           SKIP_PHPSTORM="false"
           if [ "${{ inputs.skip_phpstorm }}" == "true" ]; then
             SKIP_PHPSTORM="true"
           fi
 
           for version in ${{ steps.pending.outputs.versions }}; do
-            echo "🚀 Dispatching generate.yml for version $version..."
+            echo "🚀 Dispatching generate.yml for $SOFTWARE version $version..."
             
             # Detectar si es pre-release (si contiene un guion, ej. 5.10.0-beta1)
             PRERELEASE_VAL="false"
@@ -90,6 +103,7 @@ jobs:
             gh workflow run generate.yml \
               --ref "${{ github.ref_name }}" \
               -f version="$version" \
+              -f software="$SOFTWARE" \
               -f skip_phpstorm="$SKIP_PHPSTORM" \
               -f prerelease="$PRERELEASE_VAL"
             
