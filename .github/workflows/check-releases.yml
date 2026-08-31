@@ -1,9 +1,6 @@
-name: Check New PocketMine-MP Releases & Generate Stubs
+name: Check New PocketMine-MP Releases & Generate Stubs (Manual)
 
 on:
-  schedule:
-    # Corre cada 12 horas
-    - cron: "0 */12 * * *"
   workflow_dispatch:
     inputs:
       force_version:
@@ -13,6 +10,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: check-releases
+  cancel-in-progress: false
 
 jobs:
   check-releases:
@@ -122,7 +123,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            generator/workdir/pocketmine_phar
+            generator/workdir/server_sources
             generator/workdir/phpstorm_stubs_fork
           key: stubs-downloads-${{ needs.check-releases.outputs.version }}
           restore-keys: |
@@ -183,11 +184,23 @@ jobs:
             generator/output/stats-*.json
           retention-days: 5
 
+      - name: Clean previous draft release if exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.check-releases.outputs.version }}"
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "🧹 Eliminando release previo para $VERSION antes de recrearlo..."
+            gh release delete "$VERSION" --yes --cleanup-tag || true
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check-releases.outputs.version }}
           name: "Stubs PocketMine-MP ${{ needs.check-releases.outputs.version }}"
+          draft: false
+          fail_on_unmatched_files: true
           files: |
             generator/output/stubs-${{ needs.check-releases.outputs.version }}.zip
             generator/output/stats-${{ needs.check-releases.outputs.version }}.json
@@ -195,7 +208,7 @@ jobs:
             ## 📦 Stubs para PocketMine-MP ${{ needs.check-releases.outputs.version }}
 
             Generados automáticamente por GitHub Actions.
-            Listos para usar con **Intelephense** en [PocketIDE](https://github.com/pocketide/pocketide).
+            Listos para usar con **Intelephense** en [Deepslate](https://github.com/ImAMadDev/Deepslate).
 
             ### 📋 Información
 
@@ -211,7 +224,7 @@ jobs:
             ${{ steps.generate.outputs.sha256 }}
             ```
 
-            Usa este valor en [pocketide/pocketmine-manifest](https://github.com/pocketide/pocketmine-manifest) para actualizar el manifest.
+            Usa este valor en [ImAMadDev/pocketmine-manifest](https://github.com/ImAMadDev/pocketmine-manifest) para actualizar el manifest.
 
             ### 📊 Contenido
 
@@ -220,6 +233,31 @@ jobs:
             ---
 
             *Generado por: Check New PocketMine-MP Releases*
+
+      - name: Trigger pocketmine-manifest update
+        if: env.MANIFEST_DISPATCH_PAT != ''
+        env:
+          MANIFEST_DISPATCH_PAT: ${{ secrets.MANIFEST_DISPATCH_PAT }}
+        run: |
+          echo "🚀 Notificando a ImAMadDev/pocketmine-manifest sobre PocketMine-MP ${{ needs.check-releases.outputs.version }}..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $MANIFEST_DISPATCH_PAT" \
+            https://api.github.com/repos/ImAMadDev/pocketmine-manifest/dispatches \
+            -d "{
+              \"event_type\": \"stubs-released\",
+              \"client_payload\": {
+                \"software\": \"pocketmine\",
+                \"version\": \"${{ needs.check-releases.outputs.version }}\",
+                \"sha256\": \"${{ steps.generate.outputs.sha256 }}\"
+              }
+            }")
+
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "✅ Dispatch enviado exitosamente a pocketmine-manifest (HTTP 204)"
+          else
+            echo "⚠️ Aviso: El dispatch retornó HTTP $HTTP_CODE (verifica permisos del PAT)"
+          fi
 
       - name: Print summary
         run: |

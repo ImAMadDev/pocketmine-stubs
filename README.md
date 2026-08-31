@@ -1,47 +1,84 @@
 # pocketmine-stubs
 
-Repositorio de soporte para **PocketIDE** — genera y publica los stubs PHP
-de PocketMine-MP listos para consumir con **Intelephense** (autocompletado en VSCode/PhpStorm).
+Repositorio de soporte para **Deepslate** — genera y publica los stubs PHP
+de **PocketMine-MP y cualquier fork** listos para consumir con **Intelephense** (autocompletado en VSCode/PhpStorm/Deepslate).
 
-Los stubs se publican como [GitHub Releases](https://github.com/pocketide/pocketmine-stubs/releases)
-por versión. El IDE los descarga según lo indicado en
-[pocketide/pocketmine-manifest](https://github.com/pocketide/pocketmine-manifest).
+Los stubs se publican como [GitHub Releases](https://github.com/ImAMadDev/pocketmine-stubs/releases)
+por versión y software. El IDE los descarga según lo indicado en
+[ImAMadDev/pocketmine-manifest](https://github.com/ImAMadDev/pocketmine-manifest).
 
 ---
 
 ## ¿Cómo se generan los stubs?
 
 ```
-PocketMine-MP.phar
-       │
-       ▼
-  [PHP subprocess]           phpstorm-stubs fork
-  Extrae archivos .php    +  (pmmp/phpstorm-stubs)
-       │                              │
-       └──────────────┬───────────────┘
-                      ▼
-              PHPParser (Python/regex)
-              Extrae firmas: clases,
-              interfaces, traits, funciones,
-              constantes — sin implementación
-                      │
-                      ▼
-              StubMerger
-              PM tiene prioridad sobre phpstorm-stubs
-                      │
-                      ▼
-              Archivos .php por namespace
-              + autocompletion_index.json
-              + .phpstorm.meta.php
-                      │
-                      ▼
-              stubs-X.Y.Z.zip  ← publicado como Release
+ PocketMine-MP / Altay / Cualquier Fork (PHAR, ZIP o local)
+                       │
+                       ▼
+                 [StubMerger]           phpstorm-stubs fork
+           Extrae archivos .php      +  (pmmp/phpstorm-stubs)
+                       │                              │
+                       └──────────────┬───────────────┘
+                                      ▼
+                              PHPParser (Python/regex)
+                              Extrae firmas: clases,
+                              interfaces, traits, funciones,
+                              constantes — sin implementación
+                                      │
+                                      ▼
+                              StubMerger
+                              Servidor tiene prioridad sobre phpstorm-stubs
+                                      │
+                                      ▼
+                              Archivos .php por namespace
+                              + autocompletion_index.json
+                              + .phpstorm.meta.php
+                                      │
+                                      ▼
+                              stubs-[software-]X.Y.Z.zip  ← publicado como Release
 ```
 
-**No se requieren dependencias Python externas.** El generador usa solo stdlib.
-PHP 8.2+ es necesario solo para extraer el `.phar`.
+**No se requieren dependencias Python externas.** El generador usa solo la librería estándar de Python.
+PHP 8.2+ es necesario solo para extraer archivos `.phar`.
 
 > **Nota:** Los stubs incluyen métodos, propiedades y constantes **completas** con tipos y valores reales.
+
+---
+
+## Soporte Universal de Forks (`forks.json`)
+
+El repositorio incluye un archivo central [`forks.json`](file:///home/luq/Github%20Projects/pocketmine-stubs/forks.json) que define los forks conocidos, sus repositorios, assets PHAR o fuentes ZIP:
+
+```json
+{
+  "forks": {
+    "pocketmine": {
+      "name": "PocketMine-MP",
+      "repo": "pmmp/PocketMine-MP",
+      "type": "phar",
+      "phar_url_template": "https://github.com/pmmp/PocketMine-MP/releases/download/{version}/PocketMine-MP.phar",
+      "phar_latest_url": "https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar",
+      "source_url_template": "https://github.com/pmmp/PocketMine-MP/archive/refs/tags/{version}.zip",
+      "phar_name": "PocketMine-MP.phar",
+      "tag_prefix": "",
+      "release_name_template": "Stubs PocketMine-MP {version}"
+    },
+    "altay": {
+      "name": "Altay",
+      "repo": "altayofficial/Altay",
+      "type": "phar",
+      "phar_url_template": "https://github.com/altayofficial/Altay/releases/download/{version}/Altay.phar",
+      "phar_latest_url": "https://github.com/altayofficial/Altay/releases/latest/download/Altay.phar",
+      "source_url_template": "https://github.com/altayofficial/Altay/archive/refs/tags/{version}.zip",
+      "phar_name": "Altay.phar",
+      "tag_prefix": "altay-",
+      "release_name_template": "Stubs Altay {version}"
+    }
+  }
+}
+```
+
+Cualquier persona puede agregar nuevos forks a `forks.json` mediante un Pull Request.
 
 ---
 
@@ -49,47 +86,59 @@ PHP 8.2+ es necesario solo para extraer el `.phar`.
 
 ### Vía GitHub Actions (recomendado)
 
-```
-Actions → "Generate Stubs" → version: 5.42.1 → Run workflow
-```
+1. Ve a **Actions** → **"Generate Stubs"** → **Run workflow**.
+2. Parámetros disponibles:
+   - `version`: Versión o tag (ej: `5.42.1` o `5.44.4`).
+   - `software`: Identificador de fork (ej: `pocketmine`, `altay`, `prismarine` o custom).
+   - `repo`: Repositorio GitHub opcional en formato `owner/repo`.
+   - `phar_url` / `source_url`: URLs directas personalizadas (opcional).
+   - `skip_phpstorm`: Omitir phpstorm-stubs fork (más rápido).
 
-En ~5 minutos aparece el Release con `stubs-5.42.1.zip` y su SHA256.
+En pocos minutos aparece el Release con `stubs-[software-]X.Y.Z.zip` y su SHA256.
 
 ### Localmente
 
 ```bash
-# Clonar el repo
-git clone https://github.com/pocketide/pocketmine-stubs
-cd pocketmine-stubs
-
-# PHP 8.2+ y Python 3.11+ requeridos; sin dependencias extra
+# PocketMine-MP estándar
 python3 generator/generate.py --version=5.42.1
 
-# Con opciones
-python3 generator/generate.py \
-  --version=5.42.1 \
-  --workdir=./mi_workdir \
-  --output=./mi_output \
-  --clean                     # limpia workdir antes de empezar
+# Fork preconfigurado en forks.json (ej: Altay)
+python3 generator/generate.py --software=altay --version=5.44.4
 
-# Más rápido (sin phpstorm-stubs, solo PocketMine sources):
-python3 generator/generate.py --version=5.42.1 --skip-phpstorm
+# Fork de GitHub ad-hoc (descarga release asset automáticamente)
+python3 generator/generate.py --software=myfork --repo=owner/repo --version=1.0.0
+
+# Fork desde URL directa (PHAR o código fuente en ZIP)
+python3 generator/generate.py --software=myfork --version=1.0.0 --phar-url="https://example.com/custom.phar"
+
+# Fork desde directorio o archivo local
+python3 generator/generate.py --software=myfork --version=1.0.0 --source-path="/ruta/a/fuentes_php"
+
+# Opciones adicionales
+python3 generator/generate.py --version=5.42.1 --clean --skip-phpstorm
 ```
 
 **Output:**
-- `output/stubs-5.42.1.zip` → stubs listos
-- `output/stats-5.42.1.json` → estadísticas
+- `output/stubs-[software-]X.Y.Z.zip` → stubs listos
+- `output/stats-[software-]X.Y.Z.json` → estadísticas
 - STDOUT: SHA256 del ZIP (para copiar a manifest.json)
 
 ---
 
-## Opciones del generador
+## Opciones del generador CLI
 
 | Opción | Default | Descripción |
 |--------|---------|-------------|
-| `--version=X.Y.Z` | *(requerido)* | Versión de PocketMine-MP |
-| `--workdir=PATH` | `./workdir` | Dir temporal (descarga + extracción) |
-| `--output=PATH` | `./output` | Dir de salida para ZIP y stats |
+| `--version=X.Y.Z` | *(requerido)* | Versión del software / tag |
+| `--software=NAME` | `pocketmine` | Identificador del fork / software |
+| `--repo=OWNER/REPO` | `None` | Repositorio GitHub de origen |
+| `--phar-url=URL` | `None` | URL directa o plantilla del archivo `.phar` |
+| `--source-url=URL` | `None` | URL directa o plantilla del `.zip` de código fuente |
+| `--source-path=PATH` | `None` | Ruta local a `.phar`, `.zip` o directorio fuente |
+| `--phar-name=NAME` | `None` | Nombre del binario PHAR (ej: `Altay.phar`) |
+| `--forks-file=PATH` | `forks.json` | Ruta personalizada al archivo de configuración |
+| `--workdir=PATH` | `./workdir` | Directorio temporal |
+| `--output=PATH` | `./output` | Directorio de salida para ZIP y stats |
 | `--clean` | `false` | Limpia workdir al inicio |
 | `--skip-phpstorm` | `false` | Omite phpstorm-stubs fork (~50% más rápido) |
 
@@ -98,138 +147,28 @@ python3 generator/generate.py --version=5.42.1 --skip-phpstorm
 ## Contenido del ZIP
 
 ```
-stubs-5.42.1.zip
+stubs-[software-]X.Y.Z.zip
 ├── _global.php                    ← constantes y funciones globales
 ├── pocketmine/
-│   └── stubs.php                  ← clases del namespace pocketmine
+│   └── Server.php                 ← clases PHP con firmas completas
 ├── pocketmine/
-│   ├── entity/stubs.php
-│   ├── world/stubs.php
-│   ├── network/mcpe/stubs.php
+│   ├── entity/
+│   ├── world/
 │   └── ...
-├── .phpstorm.meta.php             ← metadata para PhpStorm
-└── autocompletion_index.json      ← índice JSON para PocketIDE
-```
-
-### autocompletion_index.json
-
-Consumido directamente por PocketIDE para autocompletado sin parsear PHP:
-
-```json
-{
-  "version": "5.42.1",
-  "namespaces": ["pocketmine", "pocketmine\\entity", "..."],
-  "classes": {
-    "Server": {
-      "namespace": "pocketmine",
-      "extends": null,
-      "methods": ["getInstance", "broadcastMessage", "..."],
-      "properties": ["..."],
-      "constants": ["..."]
-    }
-  },
-  "functions": { "...": {} },
-  "constants":  { "...": {} }
-}
+├── .phpstorm.meta.php             ← metadata para PhpStorm / Intelephense
+└── autocompletion_index.json      ← índice JSON para Deepslate
 ```
 
 ---
 
-## Arquitectura del generador
-
-```
-generator/
-├── generate.py      ← CLI entry point (produce SHA256 en stdout)
-├── merger.py        ← StubMerger: orquestador completo del pipeline
-├── php_parser.py    ← PHPParser: regex-based, sin dependencias externas
-└── requirements.txt ← vacío (solo stdlib)
-```
-
-### PHPParser (`php_parser.py`)
-
-Parser PHP basado en expresiones regulares (sin dependencias externas). Extrae:
-- `class`, `interface`, `trait`, `enum`
-- Métodos con visibilidad, `static`, `abstract`, `final`, tipos de retorno y parámetros
-- Propiedades con `readonly`, tipos, valores default y documentación
-- Constantes de clase con visibilidad y valores reales
-- Funciones globales con parámetros completos, constantes `define()`
-- Namespaces y `use` statements
-- Documentación PHPDoc preservada en stubs
-
-### StubMerger (`merger.py`)
-
-Orquestador del pipeline completo con fusión de fuentes:
-- **PocketMine-MP** (prioridad alta): fuente de verdad para la API
-- **phpstorm-stubs fork** (prioridad baja): complementa types de PHP builtin
-
-Generación:
-1. Descarga y extrae `PocketMine-MP.phar` con PHP
-2. Parsea fuentes de PocketMine-MP con `PHPParser`
-3. Parsea phpstorm-stubs fork (opcional con `--skip-phpstorm`)
-4. Fusiona con prioridad a PocketMine-MP
-5. Genera archivos `.php` por namespace
-6. Crea `autocompletion_index.json` para PocketIDE
-7. Comprime todo en `stubs-X.Y.Z.zip`
-
----
-
-## Ecosistema PocketIDE
+## Ecosistema Deepslate
 
 | Repositorio | Propósito |
 |-------------|-----------|
-| [`pocketide/pocketide`](https://github.com/pocketide/pocketide) | IDE principal (Tauri 2 + React 19) |
-| [`pocketide/pocketmine-manifest`](https://github.com/pocketide/pocketmine-manifest) | Manifest de versiones disponibles |
-| [`pocketide/pocketmine-stubs`](https://github.com/pocketide/pocketmine-stubs) | **Este repositorio** |
+| [`ImAMadDev/deepslate`](https://github.com/ImAMadDev/deepslate) | IDE principal (Tauri 2 + React 19) |
+| [`ImAMadDev/pocketmine-manifest`](https://github.com/ImAMadDev/pocketmine-manifest) | Manifest de versiones disponibles |
+| [`ImAMadDev/pocketmine-stubs`](https://github.com/ImAMadDev/pocketmine-stubs) | **Este repositorio** |
 
 ---
 
-*PocketIDE Ecosystem — pocketide/pocketmine-stubs*
-
----
-
-## Desarrollo
-
-### Estructura del proyecto
-
-```
-pocketmine-stubs/
-├── README.md                  ← Este archivo
-├── .gitignore                 ← Archivos a ignorar en git
-├── generator/
-│   ├── __init__.py
-│   └── generate.py            ← Punto de entrada CLI
-├── merger/
-│   └── merger.py              ← Orquestador del pipeline
-├── php_parser.py              ← Parser PHP sin dependencias
-├── requirements.txt           ← Dependencias (vacío)
-└── .github/
-    └── workflows/
-        └── generate.yml       ← GitHub Actions para generar stubs
-```
-
-### Testing local
-
-```bash
-# Generar stubs para versión 5.43.1
-python3 generator/generate.py --version=5.43.1
-
-# Con limpieza
-python3 generator/generate.py --version=5.43.1 --clean
-
-# Verificar output
-ls -lh output/stubs-*.zip
-unzip -l output/stubs-5.43.1.zip | head -20
-```
-
-### Debugging
-
-El generador proporciona información detallada en stderr:
-
-```bash
-# Ver logs mientras se ejecuta
-python3 generator/generate.py --version=5.43.1 2>&1 | tail -30
-```
-
-Tiempo promedio de generación: ~2 minutos (con descarga de phpstorm-stubs).
-
----
+*Deepslate Ecosystem — ImAMadDev/pocketmine-stubs*

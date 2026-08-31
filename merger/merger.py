@@ -1,7 +1,7 @@
 """
-merger.py — PocketIDE / pocketmine-stubs
-Descarga PocketMine-MP.phar y phpstorm-stubs fork, los parsea y fusiona
-en un conjunto de archivos PHP stub listos para Intelephense.
+merger.py — Deepslate / pocketmine-stubs
+Descarga PocketMine-MP o cualquier fork (vía PHAR, ZIP o carpeta local) y phpstorm-stubs fork,
+los parsea y fusiona en un conjunto de archivos PHP stub listos para Intelephense.
 """
 
 from __future__ import annotations
@@ -23,23 +23,43 @@ from php_parser import PHPParser
 
 logger = logging.getLogger(__name__)
 
-# ─── URLs ────────────────────────────────────────────────────────────────────
+# ─── URLs por defecto ─────────────────────────────────────────────────────────
 
-PM_PHAR_URL = (
-    "https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar"
-)
 PHPSTORM_FORK_URL = "https://github.com/pmmp/phpstorm-stubs/archive/refs/heads/fork.zip"
 
-# ─── Versión PM específica (usada desde CLI con --version) ───────────────────
-
-PM_VERSIONED_PHAR_URL = "https://github.com/pmmp/PocketMine-MP/releases/download/{version}/PocketMine-MP.phar"
+DEFAULT_FORKS_CONFIG: dict[str, dict[str, Any]] = {
+    "pocketmine": {
+        "name": "PocketMine-MP",
+        "repo": "pmmp/PocketMine-MP",
+        "type": "phar",
+        "phar_url_template": "https://github.com/pmmp/PocketMine-MP/releases/download/{version}/PocketMine-MP.phar",
+        "phar_latest_url": "https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar",
+        "source_url_template": "https://github.com/pmmp/PocketMine-MP/archive/refs/tags/{version}.zip",
+        "phar_name": "PocketMine-MP.phar",
+        "tag_prefix": "",
+        "release_name_template": "Stubs PocketMine-MP {version}",
+        "description": "Official PocketMine-MP server software",
+    },
+    "altay": {
+        "name": "Altay",
+        "repo": "altayofficial/Altay",
+        "type": "phar",
+        "phar_url_template": "https://github.com/altayofficial/Altay/releases/download/{version}/Altay.phar",
+        "phar_latest_url": "https://github.com/altayofficial/Altay/releases/latest/download/Altay.phar",
+        "source_url_template": "https://github.com/altayofficial/Altay/archive/refs/tags/{version}.zip",
+        "phar_name": "Altay.phar",
+        "tag_prefix": "altay-",
+        "release_name_template": "Stubs Altay {version}",
+        "description": "High-performance PocketMine-MP fork",
+    },
+}
 
 
 class StubMerger:
     """
     Pipeline completo:
-      1. Descargar PocketMine-MP.phar
-      2. Extraerlo con PHP subprocess
+      1. Adquirir fuente del servidor (PHAR, ZIP o carpeta local)
+      2. Extraer fuente si es necesario (.phar vía PHP, .zip vía Python)
       3. Parsear .php con PHPParser
       4. Descargar y parsear phpstorm-stubs fork (menor prioridad)
       5. Generar archivos .php stub por namespace
@@ -47,14 +67,39 @@ class StubMerger:
       7. Comprimir en stubs.zip
     """
 
-    def __init__(self, workdir: Path, version: str = "latest"):
+    def __init__(
+        self,
+        workdir: Path,
+        version: str = "latest",
+        software: str = "pocketmine",
+        repo: str | None = None,
+        phar_url: str | None = None,
+        source_url: str | None = None,
+        source_path: str | Path | None = None,
+        phar_name: str | None = None,
+        forks_file: str | Path | None = None,
+    ):
         self.workdir = Path(workdir)
         self.version = version
+        self.software = software.lower().strip()
         self.parser = PHPParser()
 
+        # Opciones explícitas
+        self.custom_repo = repo
+        self.custom_phar_url = phar_url
+        self.custom_source_url = source_url
+        self.source_path = Path(source_path) if source_path else None
+        self.custom_phar_name = phar_name
+
+        # Cargar configuración de forks
+        self.fork_config = self._resolve_fork_config(forks_file)
+        self.software_display_name = self.fork_config.get(
+            "name", self.software.capitalize()
+        )
+
         # Sub-directorios
-        self.pm_dir = self.workdir / "pocketmine_phar"
-        self.extract_dir = self.workdir / "phar_extracted"
+        self.pm_dir = self.workdir / "server_sources"
+        self.extract_dir = self.workdir / "sources_extracted"
         self.phpstorm_dir = self.workdir / "phpstorm_stubs_fork"
         self.stubs_dir = self.workdir / "stubs"
 
@@ -78,34 +123,167 @@ class StubMerger:
 
         self.workdir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve_fork_config(
+        self, forks_file: str | Path | None
+    ) -> dict[str, Any]:
+        """Carga y resuelve la configuración para el software seleccionado."""
+        forks_data: dict[str, Any] = {}
+
+        # Determinar archivo forks.json a usar
+        file_candidate: Path | None = None
+        if forks_file:
+            file_candidate = Path(forks_file)
+        else:
+            default_path = Path(__file__).parent.parent / "forks.json"
+            if default_path.exists():
+                file_candidate = default_path
+
+        if file_candidate and file_candidate.exists():
+            try:
+                content = json.loads(file_candidate.read_text(encoding="utf-8"))
+                forks_data = content.get("forks", {})
+            except Exception as e:
+                logger.warning(f"⚠ No se pudo leer {file_candidate}: {e}")
+
+        # Configuración base: de forks.json o default o nueva
+        if self.software in forks_data:
+            base_config = dict(forks_data[self.software])
+        elif self.software in DEFAULT_FORKS_CONFIG:
+            base_config = dict(DEFAULT_FORKS_CONFIG[self.software])
+        else:
+            base_config = {
+                "name": self.software.capitalize(),
+                "type": "phar",
+                "tag_prefix": f"{self.software}-",
+                "release_name_template": f"Stubs {self.software.capitalize()} {{version}}",
+                "description": f"Custom {self.software.capitalize()} fork",
+            }
+
+        # Aplicar overrides manuales
+        if self.custom_repo:
+            base_config["repo"] = self.custom_repo
+        if self.custom_phar_name:
+            base_config["phar_name"] = self.custom_phar_name
+        elif "phar_name" not in base_config:
+            base_config["phar_name"] = (
+                "PocketMine-MP.phar"
+                if self.software == "pocketmine"
+                else f"{self.software.capitalize()}.phar"
+            )
+
+        if self.custom_phar_url:
+            base_config["phar_url_template"] = self.custom_phar_url
+            base_config["type"] = "phar"
+        elif "phar_url_template" not in base_config and base_config.get("repo"):
+            phar_name = base_config["phar_name"]
+            repo = base_config["repo"]
+            base_config["phar_url_template"] = (
+                f"https://github.com/{repo}/releases/download/{{version}}/{phar_name}"
+            )
+            base_config["phar_latest_url"] = (
+                f"https://github.com/{repo}/releases/latest/download/{phar_name}"
+            )
+
+        if self.custom_source_url:
+            base_config["source_url_template"] = self.custom_source_url
+            base_config["type"] = "source"
+        elif "source_url_template" not in base_config and base_config.get("repo"):
+            repo = base_config["repo"]
+            base_config["source_url_template"] = (
+                f"https://github.com/{repo}/archive/refs/tags/{{version}}.zip"
+            )
+
+        return base_config
+
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 1: Descargar PocketMine-MP.phar
+    # PASO 1 y 2: Adquisición y Extracción Polimórfica de Fuentes
     # ──────────────────────────────────────────────────────────────────────────
+
+    def acquire_and_extract_source(self) -> Path:
+        """
+        Adquiere la fuente (descarga o archivo local) y la extrae a self.extract_dir.
+        Si la fuente es un directorio local, lo retorna directamente.
+        """
+        # Caso A: Ruta local proporcionada
+        if self.source_path:
+            if not self.source_path.exists():
+                raise FileNotFoundError(f"La ruta de origen no existe: {self.source_path}")
+
+            if self.source_path.is_dir():
+                logger.info(f"📂 Usando directorio de código local: {self.source_path}")
+                return self.source_path
+
+            if self.source_path.suffix.lower() == ".phar":
+                return self.extract_phar(self.source_path)
+
+            if self.source_path.suffix.lower() == ".zip":
+                return self.extract_zip(self.source_path)
+
+            # Archivo binario asumido phar
+            return self.extract_phar(self.source_path)
+
+        # Caso B: Descarga remota
+        self.pm_dir.mkdir(parents=True, exist_ok=True)
+        source_type = self.fork_config.get("type", "phar")
+
+        if source_type == "source" or self.custom_source_url:
+            # Descarga de código fuente en ZIP
+            template = self.fork_config.get(
+                "source_url_template",
+                "https://github.com/{repo}/archive/refs/tags/{version}.zip",
+            )
+            url = template.format(
+                version=self.version, repo=self.fork_config.get("repo", "")
+            )
+            dest_zip = self.pm_dir / f"{self.software}-{self.version}-source.zip"
+
+            if not dest_zip.exists():
+                logger.info(f"📥 Descargando fuentes zip ({self.software}) desde {url} ...")
+                urllib.request.urlretrieve(url, dest_zip, reporthook=self._progress_hook)
+                logger.info(f"✅ Fuentes ZIP guardadas en {dest_zip}")
+            else:
+                logger.info(f"📦 {dest_zip.name} ya existe, omitiendo descarga.")
+
+            return self.extract_zip(dest_zip)
+
+        # Caso C: Descarga de PHAR
+        phar_path = self.download_phar()
+        return self.extract_phar(phar_path)
 
     def download_phar(self) -> Path:
+        """Descarga el archivo PHAR del software configurado."""
         self.pm_dir.mkdir(parents=True, exist_ok=True)
-        phar_path = self.pm_dir / f"PocketMine-MP-{self.version}.phar"
+        file_prefix = self.fork_config.get("phar_name", f"{self.software}.phar")
+        if file_prefix.endswith(".phar"):
+            file_prefix = file_prefix[:-5]
+
+        phar_path = self.pm_dir / f"{file_prefix}-{self.version}.phar"
 
         if phar_path.exists():
-            logger.info(f"📦 PocketMine-MP-{self.version}.phar ya existe, omitiendo descarga.")
+            logger.info(f"📦 {phar_path.name} ya existe, omitiendo descarga.")
             return phar_path
 
-        url = (
-            PM_VERSIONED_PHAR_URL.format(version=self.version)
-            if self.version != "latest"
-            else PM_PHAR_URL
-        )
+        if self.version != "latest":
+            template = self.fork_config.get("phar_url_template")
+            if not template:
+                repo = self.fork_config.get("repo", "pmmp/PocketMine-MP")
+                template = f"https://github.com/{repo}/releases/download/{{version}}/{self.fork_config.get('phar_name', 'PocketMine-MP.phar')}"
+            url = template.format(
+                version=self.version, repo=self.fork_config.get("repo", "")
+            )
+        else:
+            url = self.fork_config.get("phar_latest_url")
+            if not url:
+                repo = self.fork_config.get("repo", "pmmp/PocketMine-MP")
+                url = f"https://github.com/{repo}/releases/latest/download/{self.fork_config.get('phar_name', 'PocketMine-MP.phar')}"
 
-        logger.info(f"📥 Descargando phar desde {url} ...")
+        logger.info(f"📥 Descargando phar ({self.software}) desde {url} ...")
         urllib.request.urlretrieve(url, phar_path, reporthook=self._progress_hook)
         logger.info(f"✅ Phar guardado en {phar_path}")
         return phar_path
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PASO 2: Extraer con PHP
-    # ──────────────────────────────────────────────────────────────────────────
-
     def extract_phar(self, phar_path: Path) -> Path:
+        """Extrae un archivo .phar utilizando PHP subprocess."""
         if self.extract_dir.exists():
             shutil.rmtree(self.extract_dir)
         self.extract_dir.mkdir(parents=True, exist_ok=True)
@@ -125,14 +303,32 @@ class StubMerger:
         logger.info(f"✅ Phar extraído en {self.extract_dir}")
         return self.extract_dir
 
+    def extract_zip(self, zip_path: Path) -> Path:
+        """Extrae un archivo .zip (fuentes o stubs) con la librería estándar de Python."""
+        if self.extract_dir.exists():
+            shutil.rmtree(self.extract_dir)
+        self.extract_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"📂 Extrayendo archivo ZIP ({zip_path.name})...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(self.extract_dir)
+
+        logger.info(f"✅ ZIP extraído en {self.extract_dir}")
+        return self.extract_dir
+
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 3: Parsear PocketMine-MP
+    # PASO 3: Parsear servidor fuente
     # ──────────────────────────────────────────────────────────────────────────
 
+    def parse_server(self, source_dir: Path) -> None:
+        """Parsea los archivos PHP del servidor fuente."""
+        logger.info(f"🔎 Parseando fuentes de {self.software_display_name}...")
+        self._parse_dir(source_dir, priority=True, source_label=self.software)
+        self._log_counts(self.software_display_name)
+
     def parse_pocketmine(self, source_dir: Path) -> None:
-        logger.info("🔎 Parseando fuentes de PocketMine-MP...")
-        self._parse_dir(source_dir, priority=True, source_label="pocketmine")
-        self._log_counts("PocketMine-MP")
+        """Alias retrocompatible de parse_server."""
+        self.parse_server(source_dir)
 
     # ──────────────────────────────────────────────────────────────────────────
     # PASO 4: Descargar y parsear phpstorm-stubs fork
@@ -202,9 +398,8 @@ class StubMerger:
     def run(self, output_zip: Path) -> str:
         t0 = time.time()
 
-        phar = self.download_phar()
-        extracted = self.extract_phar(phar)
-        self.parse_pocketmine(extracted)
+        extracted = self.acquire_and_extract_source()
+        self.parse_server(extracted)
 
         self.download_phpstorm_fork()
         self.parse_phpstorm_fork()
@@ -255,7 +450,6 @@ class StubMerger:
                 item["source"] = source
                 if priority or name not in dst_bucket:
                     dst_bucket[name] = item
-                    # Simplify: just count total
                     self.stats[
                         f"{bucket_name.removesuffix('s') if bucket_name not in ('classes', 'interfaces', 'traits') else bucket_name[:-2] + 's' if bucket_name in ('classes', 'traits') else 'interfaces'}_found"
                     ] = len(dst_bucket)
@@ -269,7 +463,7 @@ class StubMerger:
     ) -> None:
         lines: list[str] = [
             "<?php",
-            f"// PocketMine-MP {self.version} stubs — generated by pocketide/pocketmine-stubs",
+            f"// {self.software_display_name} {self.version} stubs — generated by ImAMadDev/pocketmine-stubs",
             "// This file is for IDE autocompletion only. DO NOT EDIT MANUALLY.",
             "// @noinspection PhpIllegalPsrClassPathInspection",
             "",
@@ -304,7 +498,7 @@ class StubMerger:
     ) -> None:
         lines: list[str] = [
             "<?php",
-            f"// PocketMine-MP {self.version} stubs — generated by pocketide/pocketmine-stubs",
+            f"// {self.software_display_name} {self.version} stubs — generated by ImAMadDev/pocketmine-stubs",
             "// This file is for IDE autocompletion only. DO NOT EDIT MANUALLY.",
             "// @noinspection PhpIllegalPsrClassPathInspection",
             "",
@@ -313,7 +507,6 @@ class StubMerger:
         if namespace:
             lines += [f"namespace {namespace};", ""]
 
-        # Collect uses from functions
         unique_uses = {}
         for fn in functions:
             for use in fn.get("uses", []):
@@ -373,7 +566,6 @@ class StubMerger:
                 path = self.stubs_dir / parts
                 path.mkdir(parents=True, exist_ok=True)
 
-            # Write classes
             for item in items["classes"]:
                 self._write_single_stub_file(
                     path / f"{item['name']}.php",
@@ -382,7 +574,6 @@ class StubMerger:
                     item,
                 )
 
-            # Write interfaces
             for item in items["interfaces"]:
                 self._write_single_stub_file(
                     path / f"{item['name']}.php",
@@ -391,7 +582,6 @@ class StubMerger:
                     item,
                 )
 
-            # Write traits
             for item in items["traits"]:
                 self._write_single_stub_file(
                     path / f"{item['name']}.php",
@@ -400,7 +590,6 @@ class StubMerger:
                     item,
                 )
 
-            # Write functions & constants if any exist
             if items["functions"] or items["constants"]:
                 fn_const_filename = (
                     "functions.php" if ns != "__global__" else "_global_functions.php"
@@ -568,7 +757,7 @@ class StubMerger:
         meta = self.stubs_dir / ".phpstorm.meta.php"
         meta.write_text(
             "<?php\n"
-            "// PhpStorm metadata for PocketMine-MP\n"
+            f"// PhpStorm metadata for {self.software_display_name}\n"
             "namespace PHPSTORM_META {\n"
             "    expectedReturnValues(\n"
             "        \\pocketmine\\Server::getInstance(),\n"
@@ -581,6 +770,7 @@ class StubMerger:
     def _write_autocompletion_index(self) -> None:
         index = {
             "version": self.version,
+            "software": self.software,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "namespaces": sorted(self.namespaces),
             "classes": {
@@ -677,6 +867,7 @@ class StubMerger:
     def _write_stats(self, output_zip: Path, sha256: str) -> None:
         stats = {
             "version": self.version,
+            "software": self.software,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "sha256": sha256,
             "zip_path": str(output_zip),
@@ -689,7 +880,8 @@ class StubMerger:
             "files_processed": self.stats["files_processed"],
             "parse_errors": self.stats["parse_errors"],
         }
-        stats_file = output_zip.parent / f"stats-{self.version}.json"
+        stats_file_name = output_zip.stem.replace("stubs", "stats") + ".json"
+        stats_file = output_zip.parent / stats_file_name
         stats_file.write_text(json.dumps(stats, indent=2), encoding="utf-8")
         logger.info(f"📊 Stats guardadas en {stats_file}")
 

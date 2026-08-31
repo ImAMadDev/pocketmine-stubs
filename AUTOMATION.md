@@ -300,6 +300,39 @@ Job 2: SKIPPED (no se ejecuta)
 
 ---
 
+## 🍴 Soporte y Automatización para Forks (`forks.json`)
+
+El flujo `generate.yml` y el script `scripts/batch_generate.py` soportan cualquier fork configurado en `forks.json` o indicado manualmente:
+
+```bash
+# Batch generation para un fork específico (ej: Altay)
+python3 scripts/batch_generate.py --software=altay --limit=3
+
+# Ver versiones pendientes de un fork
+python3 scripts/batch_generate.py --software=altay --print-pending
+```
+
+### Configuración en `forks.json`
+
+Permite registrar cualquier fork de PocketMine con su formato de releases y plantillas de descarga (`.phar` o `.zip`):
+
+```json
+{
+  "forks": {
+    "altay": {
+      "name": "Altay",
+      "repo": "altayofficial/Altay",
+      "type": "phar",
+      "phar_url_template": "https://github.com/altayofficial/Altay/releases/download/{version}/Altay.phar",
+      "tag_prefix": "altay-",
+      "release_name_template": "Stubs Altay {version}"
+    }
+  }
+}
+```
+
+---
+
 ## 🔄 Integración con otros repositorios
 
 ### pocketine-stubs (este repo)
@@ -341,7 +374,7 @@ Para enhanced automation:
    ```yaml
    - uses: peter-evans/repository-dispatch@v2
      with:
-       repository: pocketide/pocketmine-manifest
+       repository: ImAMadDev/pocketmine-manifest
        event-type: stubs-updated
        client-payload: '{"version": "${{ needs.check-releases.outputs.version }}", "sha256": "${{ steps.generate.outputs.sha256 }}"}'
    ```

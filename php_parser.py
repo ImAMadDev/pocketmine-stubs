@@ -1,5 +1,5 @@
 """
-php_parser.py — PocketIDE / pocketmine-stubs
+php_parser.py — Deepslate / pocketmine-stubs
 Regex-based PHP parser para extraer firmas de clases, métodos,
 propiedades, constantes y funciones de los archivos fuente de PocketMine-MP.
 """

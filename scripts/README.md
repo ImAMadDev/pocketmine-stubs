@@ -57,7 +57,7 @@ python3 scripts/batch_generate.py --generated-only
 python3 scripts/batch_generate.py --token=ghp_xxx...
 
 # Especificar repositorio de stubs destino manualmente
-python3 scripts/batch_generate.py --repo=pocketide/pocketmine-stubs
+python3 scripts/batch_generate.py --repo=ImAMadDev/pocketmine-stubs
 ```
 
 ---
@@ -75,4 +75,4 @@ Este diseño permite que cada versión se compile y publique en su propio workfl
 
 ## 3. Licencia y Créditos
 
-Parte del ecosistema de [PocketIDE](https://github.com/pocketide).
+Parte del ecosistema de [Deepslate](https://github.com/ImAMadDev/Deepslate).
