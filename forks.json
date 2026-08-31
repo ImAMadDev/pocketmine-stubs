@@ -24,6 +24,18 @@
       "tag_prefix": "axolotl-",
       "release_name_template": "Stubs Axolotl-PM {version}",
       "description": "High-performance PocketMine-MP fork"
+    },
+    "altay": {
+      "name": "Altay",
+      "repo": "altayoficial/Altay",
+      "type": "phar",
+      "phar_url_template": "https://github.com/altayoficial/Altay/releases/download/{version}/Altay.phar",
+      "phar_latest_url": "https://github.com/altayoficial/Altay/releases/latest/download/Altay.phar",
+      "source_url_template": "https://github.com/altayoficial/Altay/archive/refs/tags/{version}.zip",
+      "phar_name": "Altay.phar",
+      "tag_prefix": "altay-",
+      "release_name_template": "Stubs Altay {version}",
+      "description": "Lightweight, OOP based Minecraft: Bedrock Edition server software written in PHP"
     }
   }
 }
